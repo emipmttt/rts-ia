@@ -1,0 +1,24 @@
+{
+  "name": "rts-ia",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"CLIENT_PORT=5173 node --watch server/index.js\" \"vite\"",
+    "build": "vite build",
+    "start": "node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "express": "^5.2.1",
+    "pixi.js": "^8.22.0",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4",
+    "vite": "^8.3.2"
+  }
+}

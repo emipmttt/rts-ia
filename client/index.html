@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RTS Multiplayer</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <!-- Lobby: list and create rooms -->
+    <section id="lobby" class="screen">
+      <h1>RTS Multiplayer</h1>
+      <label>Your name <input id="player-name" maxlength="20" /></label>
+      <form id="create-form" class="row">
+        <input id="room-name" maxlength="30" placeholder="Room name" />
+        <button type="submit">Create room</button>
+      </form>
+      <h2>Rooms</h2>
+      <ul id="room-list"></ul>
+      <p id="lobby-error" class="error"></p>
+    </section>
+
+    <!-- Room: waiting for host to start -->
+    <section id="room" class="screen hidden">
+      <h1 id="room-title"></h1>
+      <p id="room-info"></p>
+      <ul id="player-list"></ul>
+      <div class="row">
+        <button id="start-btn" class="hidden">Start game</button>
+        <button id="leave-btn">Leave room</button>
+      </div>
+      <p id="room-error" class="error"></p>
+    </section>
+
+    <!-- Game: PixiJS canvas is mounted here -->
+    <div id="game" class="hidden">
+      <div id="hud"></div>
+      <div id="message" class="hidden"></div>
+      <nav id="build-menu"></nav>
+      <div id="tooltip" class="hidden"></div>
+      <div id="game-over" class="hidden">
+        <div class="panel">
+          <h1 id="game-over-title"></h1>
+          <p id="game-over-text"></p>
+          <div class="row">
+            <button id="spectate-btn">Keep watching</button>
+            <button id="back-btn">Back to lobby</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
