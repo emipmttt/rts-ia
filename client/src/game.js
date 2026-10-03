@@ -40,6 +40,11 @@ const RESOURCE_COLORS = {
   gold: 0xffd34d, food: 0xe57373, wood: 0x8bc34a, stone: 0xb0b0b0,
 };
 const HEAL_COLOR = 0x7dff7a;
+// Right-click markers: colour per order, lifetime in seconds
+const MARKER_COLORS = {
+  move: 0x7dff7a, attack: 0xff5252, gather: 0xffd34d, build: 0xffa040,
+};
+const MARKER_LIFE = 0.55;
 const WORK_SOUND_MS = 900; // a gathering/building villager makes a sound this often
 const HEAL_SOUND_MS = 1500;
 // Building texture per building type; width = footprint * widthFactor
@@ -117,6 +122,9 @@ export class Game {
     this.hovered = null; // { kind: 'entity' | 'resource', id }
     this.placing = null; // building type being placed
     this.arrows = []; // in-flight arrow animations
+    this.markers = []; // right-click order bursts { x, y, color, t }
+    this.groups = new Map(); // digit -> unit ids (Ctrl/Cmd + digit assigns, digit selects)
+    this.lastGroupKey = null; // { digit, time } to centre the camera on a double press
     this.destroyed = false;
   }
 
@@ -522,6 +530,7 @@ export class Game {
     this.effects.clear();
     this.drawSheep();
     this.drawArrows(t.deltaMS / 1000);
+    this.drawMarkers(t.deltaMS / 1000);
     for (const [id, s] of this.sprites) {
       const dx = s.x - s.g.x;
       s.g.x += dx * 0.3;
@@ -1138,35 +1147,94 @@ export class Game {
     this.selected = new Set(mine.map(([id]) => id));
   }
 
-  // Right click: gather, help build, attack/capture, or move
+  // Right click: gather, help build, attack/capture, or move; a burst marks the spot in the order's colour
   command(worldPoint) {
     const unitIds = this.selectedUnitIds();
     if (!unitIds.length) return;
+    const order = this.sendOrder(unitIds, worldPoint);
+    this.markers.push({ x: worldPoint.x, y: worldPoint.y, color: MARKER_COLORS[order], t: 0 });
+  }
+
+  // Emits the order for a right click at worldPoint and returns its kind
+  sendOrder(unitIds, worldPoint) {
     const target = this.pickAt(worldPoint.x, worldPoint.y);
     if (target?.kind === 'resource') {
       this.socket.emit('game:gather', { unitIds, resourceId: target.id });
-      return;
+      return 'gather';
     }
     const s = target?.kind === 'entity' ? this.sprites.get(target.id) : null;
     if (s && isBuildingType(s.type) && !s.built && s.owner === this.myId) {
       this.socket.emit('game:construct', { unitIds, buildingId: target.id });
-      return;
+      return 'build';
     }
     if (s && ENTITY_STATS[s.type].farm && s.built && s.owner === this.myId) {
       this.socket.emit('game:farm', { unitIds, buildingId: target.id });
-      return;
+      return 'gather';
     }
     // Enemies, the neutral central town center, or a fallen one (villagers capture it)
     if (s && (s.owner !== this.myId || (s.central && s.hp <= 0))) {
       this.socket.emit('game:attack', { unitIds, targetId: target.id });
-      return;
+      return 'attack';
     }
     this.socket.emit('game:move', { unitIds, x: worldPoint.x, y: worldPoint.y });
+    return 'move';
+  }
+
+  // Expanding ring + a burst of sparks that fades out where an order was given
+  drawMarkers(dt) {
+    const g = this.effects;
+    for (const m of this.markers) {
+      m.t += dt;
+      const k = Math.min(1, m.t / MARKER_LIFE);
+      const alpha = 1 - k;
+      const ease = 1 - (1 - k) ** 3;
+      g.ellipse(m.x, m.y, 6 + ease * 22, (6 + ease * 22) * 0.5).stroke({ width: 3 * alpha + 1, color: m.color, alpha });
+      g.circle(m.x, m.y, 4 * alpha).fill({ color: 0xffffff, alpha });
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const d = 6 + ease * 26;
+        g.circle(m.x + Math.cos(a) * d, m.y + Math.sin(a) * d * 0.5 - ease * 6, 2.5 * alpha + 0.5).fill({ color: m.color, alpha });
+      }
+    }
+    this.markers = this.markers.filter((m) => m.t < MARKER_LIFE);
+  }
+
+  // Ctrl/Cmd + digit saves the selected units as a group; the digit alone selects it again, and pressing
+  // it twice quickly centres the camera on the group
+  handleGroupKey(e) {
+    const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
+    if (!digit || e.target.closest?.('input, textarea')) return false;
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const ids = this.selectedUnitIds();
+      if (ids.length) {
+        this.groups.set(digit, ids);
+        this.showMessage(`Grupo ${digit}: ${ids.length} unidades`, 'notice');
+      }
+      return true;
+    }
+    const ids = (this.groups.get(digit) ?? []).filter((id) => this.sprites.has(id));
+    this.groups.set(digit, ids);
+    if (!ids.length) return true;
+    this.selected = new Set(ids);
+    this.renderHud();
+    const now = performance.now();
+    if (this.lastGroupKey?.digit === digit && now - this.lastGroupKey.time < DOUBLE_CLICK_MS) {
+      const xs = ids.map((id) => this.sprites.get(id).g);
+      const cx = xs.reduce((sum, g) => sum + g.x, 0) / xs.length;
+      const cy = xs.reduce((sum, g) => sum + g.y, 0) / xs.length;
+      const k = this.world.scale.x;
+      this.world.position.set(this.app.screen.width / 2 - cx * k, this.app.screen.height / 2 - cy * k);
+      this.clampCamera();
+    }
+    this.lastGroupKey = { digit, time: now };
+    return true;
   }
 
   setupInput() {
     this.onKeyDown = (e) => {
       if (e.key === 'Escape') { this.placing = null; this.renderHud(); }
+      if (this.handleGroupKey(e)) return;
       this.keys.add(e.key.toLowerCase());
     };
     this.onKeyUp = (e) => this.keys.delete(e.key.toLowerCase());
