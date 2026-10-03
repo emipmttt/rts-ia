@@ -872,6 +872,7 @@ export class Game {
         ? `${holder.id === this.myId ? 'Tú' : holder.name} ${formatTime(central.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)}`
         : 'neutral']);
     }
+    this.renderRanking();
     this.ui.hud.replaceChildren(...items.map(([label, value, warn]) => {
       const span = document.createElement('span');
       span.classList.toggle('warn', !!warn);
@@ -890,6 +891,34 @@ export class Game {
       btn.disabled = !canAfford(this.stock, ENTITY_STATS[btn.dataset.type].cost);
       btn.classList.toggle('active', btn.dataset.type === this.placing);
     }
+  }
+
+  // Every player by points, leader first; defeated players crossed out, disconnected ones marked
+  renderRanking() {
+    const players = [...this.players.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const title = document.createElement('li');
+    title.className = 'title';
+    title.textContent = '🏆 Ranking';
+    this.ui.ranking.replaceChildren(title, ...players.map((p, i) => {
+      const li = document.createElement('li');
+      li.classList.toggle('me', p.id === this.myId);
+      li.classList.toggle('out', !!p.defeated);
+      const pos = document.createElement('span');
+      pos.className = 'pos';
+      pos.textContent = i === 0 && !p.defeated ? '👑' : `${i + 1}.`;
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = `#${(p.color ?? 0).toString(16).padStart(6, '0')}`;
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = `${p.name}${p.id === this.myId ? ' (tú)' : ''}${p.connected === false ? ' ⚠' : ''}`;
+      if (p.connected === false) li.title = 'Desconectado';
+      const score = document.createElement('span');
+      score.className = 'score';
+      score.textContent = p.score ?? 0;
+      li.append(pos, swatch, name, score);
+      return li;
+    }));
   }
 
   createBuildMenu() {

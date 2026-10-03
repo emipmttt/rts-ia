@@ -38,6 +38,16 @@ export const CENTRAL_HP = 6000;
 export const CENTRAL_GUARDS = 6;
 export const GUARD_LEASH = 320; // guards chase intruders at most this far from their post
 
+// Ranking points
+export const SCORE = {
+  perGathered: 0.1, // per resource unit delivered
+  perKill: 10,
+  perTrained: 3,
+  perBuilding: 10, // per finished building standing
+  perUpgrade: 30,
+  perCentralSecond: 2, // per second holding the central town center
+};
+
 export const EntityType = {
   TOWN_CENTER: 'townCenter',
   BARRACKS: 'barracks',

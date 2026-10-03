@@ -185,7 +185,7 @@ socket.on('game:start', async (data) => {
   play('start');
   startAmbient();
   game = new Game(socket, myId, $('game'), {
-    hud: $('hud'), tooltip: $('tooltip'), buildMenu: $('build-menu'), message: $('message'),
+    hud: $('hud'), ranking: $('ranking'), tooltip: $('tooltip'), buildMenu: $('build-menu'), message: $('message'),
   });
   await game.init(data);
 });

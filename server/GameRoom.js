@@ -1,7 +1,7 @@
 import {
   TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, STARTING_VILLAGERS, STARTING_STOCK,
   MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, EntityType, ENTITY_STATS, RESOURCE_STATS, MAX_POPULATION,
-  Terrain, ResourceType, mapTilesFor, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP,
+  Terrain, ResourceType, mapTilesFor, SCORE, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP,
 } from '../shared/constants.js';
 import {
   isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford,
@@ -900,19 +900,27 @@ export class GameRoom {
   }
 
   // Units alive plus units waiting in queues count against the cap, which houses and town centers raise
+  // Population, population cap and ranking points
   updatePopulation(player) {
     let pop = 0;
     let cap = 0;
+    let buildings = 0;
     for (const e of this.entities.values()) {
       if (e.owner !== player.id) continue;
       if (isUnit(e)) pop++;
       else {
         pop += e.queue.length;
         if (e.built) cap += ENTITY_STATS[e.type].population ?? 0;
+        if (e.built && !e.central) buildings++;
       }
     }
     player.pop = pop;
     player.popCap = Math.min(MAX_POPULATION, cap);
+    const { stats } = player;
+    const central = this.central?.owner === player.id ? this.central.controlTime : 0;
+    player.score = Math.floor(stats.gathered * SCORE.perGathered + stats.kills * SCORE.perKill
+      + stats.trained * SCORE.perTrained + buildings * SCORE.perBuilding
+      + player.gatherLevel * SCORE.perUpgrade + central * SCORE.perCentralSecond);
   }
 
   tick() {

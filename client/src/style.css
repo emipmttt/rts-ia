@@ -62,6 +62,21 @@ button:disabled { filter: grayscale(0.9) brightness(0.8); cursor: default; }
 #hud span { display: inline-flex; align-items: center; gap: 4px; }
 #hud span.warn { color: #ff8a80; animation: pulse 1s ease-in-out infinite; }
 #hud img { width: 28px; height: 28px; image-rendering: pixelated; }
+/* Points ranking, top-left under the resource bar */
+#ranking {
+  position: absolute; top: 72px; left: 8px; margin: 0; padding: 6px 10px; list-style: none; min-width: 170px;
+  font-size: 12px; font-weight: 600; pointer-events: none; text-shadow: 0 1px 0 #000;
+  background: rgba(30, 20, 10, 0.72); border: 2px solid #5d3a1e; border-radius: 6px;
+}
+#ranking li { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+#ranking li.me { color: #ffe082; }
+#ranking li.out { opacity: 0.45; text-decoration: line-through; }
+#ranking .pos { width: 16px; text-align: right; }
+#ranking .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
+#ranking .score { font-variant-numeric: tabular-nums; }
+#ranking .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+#ranking .title { color: #d8c08a; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; justify-content: center; }
+
 #tooltip {
   position: fixed; top: 0; left: 0; max-width: 340px; padding: 2px 4px; font-size: 13px; white-space: pre-line;
   pointer-events: none; z-index: 10;
