@@ -16,7 +16,10 @@ export const MAP_TILES = 60;
 export const MAP_WIDTH = MAP_TILES * TILE_SIZE;
 export const MAP_HEIGHT = MAP_TILES * TILE_SIZE;
 
-export const Terrain = { GRASS: 0, SAND: 1 };
+// Water can't be crossed except over bridges; neither can be built on
+export const Terrain = {
+  GRASS: 0, SAND: 1, WATER: 2, BRIDGE: 3,
+};
 
 // Distance from the map border to the centre of each player's town center
 export const SPAWN_MARGIN = 200;
@@ -72,7 +75,7 @@ export const ENTITY_STATS = {
     kind: 'building', name: 'Establo', tiles: 2, hp: 1000, cost: { wood: 175 }, buildTime: 30, trains: EntityType.HORSEMAN,
   },
   [EntityType.TOWER]: {
-    kind: 'building', name: 'Torre', tiles: 1, hp: 700, cost: { wood: 100, gold: 50 }, buildTime: 30,
+    kind: 'building', name: 'Torre', tiles: 1, hp: 350, cost: { wood: 100, gold: 50 }, buildTime: 30,
     attack: { damage: 6, range: 220, cooldown: 1.5 },
   },
   [EntityType.VILLAGER]: {

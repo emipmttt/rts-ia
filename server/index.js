@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -15,9 +16,20 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 const lobby = new Lobby(io);
 
+// Each browser tab keeps a secret token across reconnects; the public player id is derived from it,
+// so a dropped player gets their village back and nobody can claim someone else's id
+const playerIdFor = (token) => createHash('sha256').update(token).digest('hex').slice(0, 16);
+
 io.on('connection', (socket) => {
-  console.log(`Socket connected: ${socket.id}`);
+  const { token } = socket.handshake.auth ?? {};
+  const valid = typeof token === 'string' && token.length >= 16 && token.length <= 100;
+  const playerId = playerIdFor(valid ? token : randomUUID());
+  socket.data.playerId = playerId;
+  socket.join(playerId);
+  console.log(`Socket connected: ${socket.id} (player ${playerId})`);
+  socket.emit('session', { playerId });
   socket.emit('lobby:rooms', lobby.list());
+  lobby.reconnect(socket);
 
   // Lobby / rooms
   socket.on('lobby:list', () => socket.emit('lobby:rooms', lobby.list()));
@@ -25,20 +37,21 @@ io.on('connection', (socket) => {
   socket.on('room:join', (data) => lobby.join(socket, data ?? {}));
   socket.on('room:leave', () => lobby.leave(socket));
   socket.on('room:start', () => lobby.start(socket));
-  socket.on('chat', (text) => lobby.roomOf(socket)?.handleChat(socket.id, text));
+  socket.on('chat', (text) => lobby.roomOf(socket)?.handleChat(socket.data.playerId, text));
 
   // In-game commands
-  socket.on('game:move', (order) => lobby.roomOf(socket)?.handleMove(socket.id, order ?? {}));
-  socket.on('game:gather', (order) => lobby.roomOf(socket)?.handleGather(socket.id, order ?? {}));
-  socket.on('game:build', (order) => lobby.roomOf(socket)?.handleBuild(socket.id, order ?? {}));
-  socket.on('game:construct', (order) => lobby.roomOf(socket)?.handleConstruct(socket.id, order ?? {}));
-  socket.on('game:train', (order) => lobby.roomOf(socket)?.handleTrain(socket.id, order ?? {}));
-  socket.on('game:farm', (order) => lobby.roomOf(socket)?.handleFarm(socket.id, order ?? {}));
-  socket.on('game:reseed', (order) => lobby.roomOf(socket)?.handleReseed(socket.id, order ?? {}));
-  socket.on('game:attack', (order) => lobby.roomOf(socket)?.handleAttack(socket.id, order ?? {}));
+  socket.on('game:move', (order) => lobby.roomOf(socket)?.handleMove(socket.data.playerId, order ?? {}));
+  socket.on('game:gather', (order) => lobby.roomOf(socket)?.handleGather(socket.data.playerId, order ?? {}));
+  socket.on('game:build', (order) => lobby.roomOf(socket)?.handleBuild(socket.data.playerId, order ?? {}));
+  socket.on('game:construct', (order) => lobby.roomOf(socket)?.handleConstruct(socket.data.playerId, order ?? {}));
+  socket.on('game:train', (order) => lobby.roomOf(socket)?.handleTrain(socket.data.playerId, order ?? {}));
+  socket.on('game:farm', (order) => lobby.roomOf(socket)?.handleFarm(socket.data.playerId, order ?? {}));
+  socket.on('game:reseed', (order) => lobby.roomOf(socket)?.handleReseed(socket.data.playerId, order ?? {}));
+  socket.on('game:attack', (order) => lobby.roomOf(socket)?.handleAttack(socket.data.playerId, order ?? {}));
 
   socket.on('disconnect', () => {
-    lobby.leave(socket);
+    // Another tab/socket of the same player may still be connected
+    if (!io.sockets.adapter.rooms.get(playerId)?.size) lobby.disconnect(socket);
     console.log(`Socket disconnected: ${socket.id}`);
   });
 });

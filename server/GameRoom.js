@@ -1,17 +1,26 @@
 import {
   MAP_WIDTH, MAP_HEIGHT, TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, STARTING_VILLAGERS, STARTING_STOCK,
   MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, EntityType, ENTITY_STATS, RESOURCE_STATS, MAX_POPULATION,
+  MAP_TILES, Terrain, ResourceType,
 } from '../shared/constants.js';
 import {
   isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford,
 } from '../shared/rules.js';
 import { assignSpawns } from './spawns.js';
 import { generateWorld } from './worldgen.js';
+import { findPath, clearLine } from './pathfinding.js';
 
 const DT = 1 / TICK_RATE;
 const RETARGET_RADIUS = 400; // how far a villager looks for more of the same resource
 const SEPARATION_CELL = 32; // grid cell size for unit collision lookups (>= largest unit diameter)
 const SEPARATION_ITERATIONS = 4;
+const COLLISION_PADDING = 3; // units keep this much extra space between each other, matching their sprites
+const TERRAIN_RADIUS = 0.8; // fraction of a unit's radius that must stay out of trees and water
+const REPATH_TICKS = TICK_RATE; // a blocked unit retries its path at most once a second
+const RECONNECT_GRACE_MS = 5 * 60 * 1000; // a playing room with nobody connected is closed after this
+
+// Trees and gold mines are solid; bushes and sheep can be walked through
+const isSolidResource = (r) => r.type === ResourceType.GOLD || (r.type === ResourceType.WOOD && r.variant !== 'bush');
 
 export const RoomStatus = { WAITING: 'waiting', PLAYING: 'playing', FINISHED: 'finished' };
 
@@ -27,11 +36,14 @@ export class GameRoom {
     this.name = name;
     this.hostId = hostId;
     this.status = RoomStatus.WAITING;
-    this.players = new Map(); // socketId -> { id, name, faction, color, stock }
+    this.players = new Map(); // playerId -> { id, name, faction, color, stock, connected }
     this.entities = new Map(); // entityId -> unit or building
     this.resources = new Map(); // resourceId -> { id, type, tx, ty, x, y, amount }
     this.resourceTiles = new Map(); // "tx,ty" -> resourceId
     this.buildingTiles = new Map(); // "tx,ty" -> buildingId
+    this.walkBlocked = new Uint8Array(MAP_TILES * MAP_TILES); // 1 = water, tree or gold mine
+    this.tickCount = 0;
+    this.emptySince = null; // when the last player of a running game lost connection
     this.resourceChanges = new Map(); // resourceId -> new amount (0 = depleted), flushed each tick
     this.shots = []; // arrows fired this tick, sent to clients for the animation
     this.world = null;
@@ -65,27 +77,25 @@ export class GameRoom {
 
   broadcastRoom() { this.io.to(this.id).emit('room:update', this.details()); }
 
-  addPlayer(socket, name) {
+  addPlayer(playerId, name) {
     // Random faction among the ones not taken yet in this room
     const used = new Set([...this.players.values()].map((p) => p.faction));
     const free = FACTIONS.filter((f) => !used.has(f.id));
     const faction = free[Math.floor(Math.random() * free.length)];
-    this.players.set(socket.id, {
-      id: socket.id, name, faction: faction.id, color: faction.color, stock: { ...STARTING_STOCK }, defeated: false,
-      pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
+    this.players.set(playerId, {
+      id: playerId, name, faction: faction.id, color: faction.color, stock: { ...STARTING_STOCK }, defeated: false,
+      connected: true, pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
     });
-    socket.join(this.id);
     this.broadcastRoom();
   }
 
-  removePlayer(socket) {
-    if (!this.players.has(socket.id)) return;
-    this.players.delete(socket.id);
-    for (const e of [...this.entities.values()]) if (e.owner === socket.id) this.removeEntity(e);
-    socket.leave(this.id);
-    if (this.central?.owner === socket.id) this.loseCentral();
+  removePlayer(playerId) {
+    if (!this.players.has(playerId)) return;
+    this.players.delete(playerId);
+    for (const e of [...this.entities.values()]) if (e.owner === playerId) this.removeEntity(e);
+    if (this.central?.owner === playerId) this.loseCentral();
     // Hand host to the next player in the room
-    if (this.hostId === socket.id) this.hostId = this.players.keys().next().value ?? null;
+    if (this.hostId === playerId) this.hostId = this.players.keys().next().value ?? null;
     this.broadcastRoom();
     if (this.status === RoomStatus.PLAYING) this.checkGameOver();
   }
@@ -110,7 +120,17 @@ export class GameRoom {
     this.central.central = true;
     this.central.controlTime = 0;
 
-    this.io.to(this.id).emit('game:start', {
+    this.world.tiles.forEach((t, i) => { if (t === Terrain.WATER) this.walkBlocked[i] = 1; });
+    for (const r of this.resources.values()) if (isSolidResource(r)) this.walkBlocked[r.ty * MAP_TILES + r.tx] = 1;
+
+    this.io.to(this.id).emit('game:start', this.startPayload());
+    this.interval = setInterval(() => this.tick(), 1000 / TICK_RATE);
+    this.broadcastRoom();
+  }
+
+  // Everything a client needs to draw the game from scratch (at the start, or after reconnecting)
+  startPayload() {
+    return {
       map: { width: MAP_WIDTH, height: MAP_HEIGHT, tiles: this.world.tiles },
       resources: [...this.resources.values()].map(({
         id, type, variant, tx, ty, amount, max,
@@ -118,10 +138,20 @@ export class GameRoom {
         id, type, variant, tx, ty, amount, max,
       })),
       players: this.details().players,
-    });
-    this.interval = setInterval(() => this.tick(), 1000 / TICK_RATE);
-    this.broadcastRoom();
+    };
   }
+
+  // A player in a running game lost or regained their connection; their village stays either way
+  setConnected(playerId, connected) {
+    const player = this.players.get(playerId);
+    if (!player || player.connected === connected) return;
+    player.connected = connected;
+    this.notice(connected ? `${player.name} se reconectó` : `${player.name} perdió la conexión`);
+    const anyone = [...this.players.values()].some((p) => p.connected);
+    this.emptySince = anyone ? null : Date.now();
+  }
+
+  get abandoned() { return this.emptySince !== null && Date.now() - this.emptySince > RECONNECT_GRACE_MS; }
 
   // ---- Entities ----
 
@@ -168,7 +198,8 @@ export class GameRoom {
     if (isBuilding(e)) for (const [cx, cy] of footprint(e.type, e.tx, e.ty)) this.buildingTiles.delete(tileKey(cx, cy));
   }
 
-  isTileBlocked = (x, y) => this.resourceTiles.has(tileKey(x, y)) || this.buildingTiles.has(tileKey(x, y));
+  isTileBlocked = (x, y) => this.resourceTiles.has(tileKey(x, y)) || this.buildingTiles.has(tileKey(x, y))
+    || this.world.tiles[y * MAP_TILES + x] === Terrain.WATER || this.world.tiles[y * MAP_TILES + x] === Terrain.BRIDGE;
 
   // Town center at the spawn point, villagers placed on the side facing the map centre
   spawnPlayer(owner, point) {
@@ -185,18 +216,18 @@ export class GameRoom {
 
   // ---- Commands from clients ----
 
-  ownedUnits(socketId, unitIds) {
+  ownedUnits(playerId, unitIds) {
     if (this.status !== RoomStatus.PLAYING || !Array.isArray(unitIds)) return [];
-    return unitIds.map((id) => this.entities.get(id)).filter((e) => e && e.owner === socketId && isUnit(e));
+    return unitIds.map((id) => this.entities.get(id)).filter((e) => e && e.owner === playerId && isUnit(e));
   }
 
-  ownedVillagers(socketId, unitIds) {
-    return this.ownedUnits(socketId, unitIds).filter((u) => u.type === EntityType.VILLAGER);
+  ownedVillagers(playerId, unitIds) {
+    return this.ownedUnits(playerId, unitIds).filter((u) => u.type === EntityType.VILLAGER);
   }
 
-  handleMove(socketId, { unitIds, x, y }) {
+  handleMove(playerId, { unitIds, x, y }) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    const units = this.ownedUnits(socketId, unitIds);
+    const units = this.ownedUnits(playerId, unitIds);
     const cols = Math.ceil(Math.sqrt(units.length));
     units.forEach((u, i) => {
       u.task = null;
@@ -205,103 +236,107 @@ export class GameRoom {
     });
   }
 
-  handleGather(socketId, { unitIds, resourceId }) {
+  handleGather(playerId, { unitIds, resourceId }) {
     const resource = this.resources.get(resourceId);
     if (!resource) return;
-    for (const u of this.ownedVillagers(socketId, unitIds)) {
-      u.task = { type: 'gather', resourceId: resource.id, resourceType: resource.type };
+    // A tree deep inside a forest can't be reached yet: work on the closest exposed one instead
+    const target = this.isExposed(resource) ? resource : this.closest(
+      [...this.resources.values()].filter((r) => r.type === resource.type && this.isExposed(r)), resource.x, resource.y, RETARGET_RADIUS,
+    ) ?? resource;
+    for (const u of this.ownedVillagers(playerId, unitIds)) {
+      u.task = { type: 'gather', resourceId: target.id, resourceType: target.type };
     }
   }
 
   // Place a new building: pays the cost and sends villagers to build it
-  handleBuild(socketId, { type, tx, ty, unitIds }) {
-    const player = this.players.get(socketId);
+  handleBuild(playerId, { type, tx, ty, unitIds }) {
+    const player = this.players.get(playerId);
     if (!player || this.status !== RoomStatus.PLAYING || !isBuildingType(type)) return;
     if (!Number.isInteger(tx) || !Number.isInteger(ty)) return;
     const { cost } = ENTITY_STATS[type];
-    if (!canAfford(player.stock, cost)) return this.error(socketId, 'Recursos insuficientes');
-    if (!canPlace(type, tx, ty, this.isTileBlocked)) return this.error(socketId, 'No se puede construir ahí');
+    if (!canAfford(player.stock, cost)) return this.error(playerId, 'Recursos insuficientes');
+    if (!canPlace(type, tx, ty, this.isTileBlocked)) return this.error(playerId, 'No se puede construir ahí');
 
-    let builders = this.ownedVillagers(socketId, unitIds);
+    let builders = this.ownedVillagers(playerId, unitIds);
     if (!builders.length) {
       // No villagers selected: pull the closest one off whatever it is doing
       const { x, y } = buildingCenter(type, tx, ty);
       const closest = this.closest([...this.entities.values()].filter(
-        (e) => e.owner === socketId && e.type === EntityType.VILLAGER,
+        (e) => e.owner === playerId && e.type === EntityType.VILLAGER,
       ), x, y);
-      if (!closest) return this.error(socketId, 'Necesitas un aldeano para construir');
+      if (!closest) return this.error(playerId, 'Necesitas un aldeano para construir');
       builders = [closest];
     }
 
     for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
-    const building = this.addBuilding(type, socketId, tx, ty, false);
+    const building = this.addBuilding(type, playerId, tx, ty, false);
     for (const u of builders) u.task = { type: 'build', buildingId: building.id };
   }
 
   // Send villagers to help finish an existing construction
-  handleConstruct(socketId, { unitIds, buildingId }) {
+  handleConstruct(playerId, { unitIds, buildingId }) {
     const building = this.entities.get(buildingId);
-    if (!building || building.owner !== socketId || !isBuilding(building) || building.built) return;
-    for (const u of this.ownedVillagers(socketId, unitIds)) u.task = { type: 'build', buildingId };
+    if (!building || building.owner !== playerId || !isBuilding(building) || building.built) return;
+    for (const u of this.ownedVillagers(playerId, unitIds)) u.task = { type: 'build', buildingId };
   }
 
   // Assign villagers to harvest a finished farm
-  handleFarm(socketId, { unitIds, buildingId }) {
+  handleFarm(playerId, { unitIds, buildingId }) {
     const farm = this.entities.get(buildingId);
-    if (!farm || farm.owner !== socketId || !ENTITY_STATS[farm.type].farm || !farm.built) return;
-    for (const u of this.ownedVillagers(socketId, unitIds)) u.task = { type: 'farm', buildingId };
+    if (!farm || farm.owner !== playerId || !ENTITY_STATS[farm.type].farm || !farm.built) return;
+    for (const u of this.ownedVillagers(playerId, unitIds)) u.task = { type: 'farm', buildingId };
   }
 
   // Replant a harvested farm, paying wood
-  handleReseed(socketId, { buildingId }) {
-    const player = this.players.get(socketId);
+  handleReseed(playerId, { buildingId }) {
+    const player = this.players.get(playerId);
     const farm = this.entities.get(buildingId);
     const stats = farm && ENTITY_STATS[farm.type].farm;
-    if (!player || !stats || farm.owner !== socketId || !farm.built || this.status !== RoomStatus.PLAYING) return;
-    if (farm.food > 0) return this.error(socketId, 'La siembra aún no se ha acabado');
-    if (!canAfford(player.stock, stats.reseedCost)) return this.error(socketId, 'Recursos insuficientes');
+    if (!player || !stats || farm.owner !== playerId || !farm.built || this.status !== RoomStatus.PLAYING) return;
+    if (farm.food > 0) return this.error(playerId, 'La siembra aún no se ha acabado');
+    if (!canAfford(player.stock, stats.reseedCost)) return this.error(playerId, 'Recursos insuficientes');
     for (const [k, v] of Object.entries(stats.reseedCost)) player.stock[k] -= v;
     farm.food = stats.food;
   }
 
   // Attack an enemy entity. Villagers ordered onto a fallen central town center capture it instead.
-  handleAttack(socketId, { unitIds, targetId }) {
+  handleAttack(playerId, { unitIds, targetId }) {
     const target = this.entities.get(targetId);
     if (!target) return;
-    for (const u of this.ownedUnits(socketId, unitIds)) {
+    for (const u of this.ownedUnits(playerId, unitIds)) {
       if (target.central && target.hp <= 0) {
         if (u.type === EntityType.VILLAGER) u.task = { type: 'capture', buildingId: target.id };
-      } else if (target.owner !== socketId) {
+      } else if (target.owner !== playerId) {
         u.task = { type: 'attack', targetId: target.id };
       }
     }
   }
 
   // Queue a unit in a finished building, paying its cost up front
-  handleTrain(socketId, { buildingId }) {
-    const player = this.players.get(socketId);
+  handleTrain(playerId, { buildingId }) {
+    const player = this.players.get(playerId);
     const building = this.entities.get(buildingId);
-    if (!player || !building || building.owner !== socketId || !isBuilding(building) || !building.built) return;
+    if (!player || !building || building.owner !== playerId || !isBuilding(building) || !building.built) return;
     const unitType = ENTITY_STATS[building.type].trains;
     if (!unitType) return;
-    if (building.queue.length >= MAX_TRAIN_QUEUE) return this.error(socketId, 'La cola está llena');
+    if (building.queue.length >= MAX_TRAIN_QUEUE) return this.error(playerId, 'La cola está llena');
     const { cost } = ENTITY_STATS[unitType];
     this.updatePopulation(player);
     if (player.pop >= player.popCap) {
-      return this.error(socketId, player.popCap >= MAX_POPULATION ? 'Límite de población alcanzado' : 'Necesitas más casas');
+      return this.error(playerId, player.popCap >= MAX_POPULATION ? 'Límite de población alcanzado' : 'Necesitas más casas');
     }
-    if (!canAfford(player.stock, cost)) return this.error(socketId, 'Recursos insuficientes');
+    if (!canAfford(player.stock, cost)) return this.error(playerId, 'Recursos insuficientes');
     for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
     building.queue.push(unitType);
   }
 
-  handleChat(socketId, text) {
-    const player = this.players.get(socketId);
+  handleChat(playerId, text) {
+    const player = this.players.get(playerId);
     if (!player || typeof text !== 'string' || !text.trim()) return;
     this.io.to(this.id).emit('chat', { from: player.name, color: player.color, text: text.trim().slice(0, 200) });
   }
 
-  error(socketId, message) { this.io.to(socketId).emit('game:error', { message }); }
+  error(playerId, message) { this.io.to(playerId).emit('game:error', { message }); }
 
   notice(message) { this.io.to(this.id).emit('game:notice', { message }); }
 
@@ -317,23 +352,57 @@ export class GameRoom {
     return best;
   }
 
-  // Moves toward (x, y); returns true once within stopDistance
+  // A resource with at least one walkable side can be gathered
+  isExposed(r) {
+    if (!isSolidResource(r)) return true;
+    return [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => {
+      const x = r.tx + dx;
+      const y = r.ty + dy;
+      return x >= 0 && y >= 0 && x < MAP_TILES && y < MAP_TILES && !this.walkBlocked[y * MAP_TILES + x];
+    });
+  }
+
+  // Moves toward (x, y), around trees and water; returns true once within stopDistance.
+  // Sets u.unreachable when the destination can't be reached and the unit got as close as it can.
   moveToward(u, x, y, stopDistance = 0) {
-    const dx = x - u.x;
-    const dy = y - u.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist <= stopDistance) return true;
+    const dist = Math.hypot(x - u.x, y - u.y);
+    u.unreachable = false;
+    if (dist <= stopDistance) { u.path = null; return true; }
     u.action = 'moving';
-    const step = ENTITY_STATS[u.type].speed * DT;
-    if (dist - stopDistance <= step) {
-      const k = (dist - stopDistance) / dist;
-      u.x += dx * k;
-      u.y += dy * k;
-      return true;
+    const r = ENTITY_STATS[u.type].radius * TERRAIN_RADIUS;
+    const gx = clamp(Math.floor(x / TILE_SIZE), 0, MAP_TILES - 1);
+    const gy = clamp(Math.floor(y / TILE_SIZE), 0, MAP_TILES - 1);
+    const goal = gy * MAP_TILES + gx;
+    // Walking up to a tree or mine: its own tile doesn't count as an obstacle
+    const ignore = stopDistance > 0 && this.resourceTiles.has(tileKey(gx, gy)) ? goal : -1;
+
+    // Straight line when nothing is in the way, otherwise follow an A* path (recomputed when the goal tile changes)
+    let wp = { x, y };
+    if (!clearLine(this.walkBlocked, u.x, u.y, x, y, r, ignore)) {
+      if (!u.path || u.path.goal !== goal || (!u.path.points.length && this.tickCount - u.path.tick >= REPATH_TICKS)) {
+        const sx = clamp(Math.floor(u.x / TILE_SIZE), 0, MAP_TILES - 1);
+        const sy = clamp(Math.floor(u.y / TILE_SIZE), 0, MAP_TILES - 1);
+        u.path = { goal, tick: this.tickCount, ...findPath(this.walkBlocked, sx, sy, gx, gy, ignore === goal) };
+      }
+      const pts = u.path.points;
+      // Drop reached waypoints, and skip ahead whenever the next one is already in plain sight
+      while (pts.length && Math.hypot(pts[0].x - u.x, pts[0].y - u.y) < 4) pts.shift();
+      while (pts.length > 1 && clearLine(this.walkBlocked, u.x, u.y, pts[1].x, pts[1].y, r, ignore)) pts.shift();
+      if (!pts.length) {
+        if (u.path.partial) { u.unreachable = true; u.action = 'idle'; return false; }
+      } else if (pts.length > 1 || u.path.partial) wp = pts[0];
     }
-    u.x += (dx / dist) * step;
-    u.y += (dy / dist) * step;
-    return false;
+
+    const step = ENTITY_STATS[u.type].speed * DT;
+    const final = wp.x === x && wp.y === y;
+    const dx = wp.x - u.x;
+    const dy = wp.y - u.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const remaining = final ? dist - stopDistance : d;
+    const k = Math.min(step, remaining) / d;
+    u.x += dx * k;
+    u.y += dy * k;
+    return final && remaining <= step;
   }
 
   // Pushes overlapping units apart so they never stack on top of each other
@@ -351,11 +420,11 @@ export class GameRoom {
       for (const a of units) {
         const cx = Math.floor(a.x / SEPARATION_CELL);
         const cy = Math.floor(a.y / SEPARATION_CELL);
-        const ra = ENTITY_STATS[a.type].radius;
+        const ra = ENTITY_STATS[a.type].radius + COLLISION_PADDING;
         for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
           for (const b of grid.get(tileKey(cx + ox, cy + oy)) ?? []) {
             if (b.id <= a.id) continue; // each pair once
-            const minDist = ra + ENTITY_STATS[b.type].radius;
+            const minDist = ra + ENTITY_STATS[b.type].radius + COLLISION_PADDING;
             let dx = b.x - a.x;
             let dy = b.y - a.y;
             let dist = Math.hypot(dx, dy);
@@ -378,11 +447,42 @@ export class GameRoom {
       }
       if (!moved) break;
     }
+    for (const u of units) this.pushOutOfTerrain(u);
     // A unit with a plain move order that got shoved near its destination settles where it is,
     // otherwise idle units would keep walking back into each other forever
     for (const u of pushed) {
       if (u.task) continue;
       if (Math.hypot(u.tx - u.x, u.ty - u.y) <= ENTITY_STATS[u.type].radius * 3) { u.tx = u.x; u.ty = u.y; }
+    }
+  }
+
+  // Keeps a unit's body out of trees, gold mines and water
+  pushOutOfTerrain(u) {
+    const r = ENTITY_STATS[u.type].radius * TERRAIN_RADIUS;
+    const cx = Math.floor(u.x / TILE_SIZE);
+    const cy = Math.floor(u.y / TILE_SIZE);
+    for (let ty = cy - 1; ty <= cy + 1; ty++) {
+      for (let tx = cx - 1; tx <= cx + 1; tx++) {
+        if (tx < 0 || ty < 0 || tx >= MAP_TILES || ty >= MAP_TILES || !this.walkBlocked[ty * MAP_TILES + tx]) continue;
+        const x0 = tx * TILE_SIZE;
+        const y0 = ty * TILE_SIZE;
+        const nx = clamp(u.x, x0, x0 + TILE_SIZE);
+        const ny = clamp(u.y, y0, y0 + TILE_SIZE);
+        const dx = u.x - nx;
+        const dy = u.y - ny;
+        const d = Math.hypot(dx, dy);
+        if (d >= r) continue;
+        if (d > 0) {
+          u.x = nx + (dx / d) * r;
+          u.y = ny + (dy / d) * r;
+        } else {
+          // Centre inside the tile: leave through the closest edge
+          const exits = [[u.x - x0, -1, 0], [x0 + TILE_SIZE - u.x, 1, 0], [u.y - y0, 0, -1], [y0 + TILE_SIZE - u.y, 0, 1]];
+          const [depth, ex, ey] = exits.sort((a, b) => a[0] - b[0])[0];
+          u.x += ex * (depth + r);
+          u.y += ey * (depth + r);
+        }
+      }
     }
   }
 
@@ -393,7 +493,7 @@ export class GameRoom {
 
     // Resource gone: look for another of the same type nearby
     if (!resource) {
-      const sameType = [...this.resources.values()].filter((r) => r.type === task.resourceType);
+      const sameType = [...this.resources.values()].filter((r) => r.type === task.resourceType && this.isExposed(r));
       resource = this.closest(sameType, u.x, u.y, RETARGET_RADIUS);
       if (resource) task.resourceId = resource.id;
     }
@@ -424,6 +524,7 @@ export class GameRoom {
     if (resource.amount <= 0) {
       this.resources.delete(resource.id);
       this.resourceTiles.delete(tileKey(resource.tx, resource.ty));
+      this.walkBlocked[resource.ty * MAP_TILES + resource.tx] = 0;
     }
   }
 
@@ -618,6 +719,7 @@ export class GameRoom {
   }
 
   tick() {
+    this.tickCount++;
     for (const e of [...this.entities.values()]) {
       if (!this.entities.has(e.id)) continue; // removed earlier this tick
       if (isBuilding(e)) { this.updateProduction(e); this.updateTower(e); continue; }
@@ -630,6 +732,7 @@ export class GameRoom {
       else if (task === 'capture') this.updateCapturer(e);
       else if (task === 'farm') this.updateFarmer(e);
       else if (this.moveToward(e, e.tx, e.ty)) this.autoAcquire(e);
+      else if (e.unreachable) { e.tx = e.x; e.ty = e.y; } // stop on the river bank / forest edge
     }
     this.separateUnits();
     if (this.central?.owner) this.central.controlTime += DT;

@@ -1,5 +1,5 @@
 import {
-  AnimatedSprite, Application, BlurFilter, Container, Graphics, Sprite, TilingSprite,
+  AnimatedSprite, Application, BlurFilter, Container, Graphics, Rectangle, Sprite, TilingSprite,
 } from 'pixi.js';
 import { loadAssets } from './assets.js';
 import {
@@ -12,6 +12,11 @@ import {
 
 const SAND_COLOR = 0xd8c08a;
 const SAND_LIGHT = 0xe6d3a3;
+const WATER_BANK = 0x2f6f9f;
+const WATER_COLOR = 0x3f8fc9;
+const WATER_LIGHT = 0x6fb6e4;
+const BRIDGE_COLOR = 0x9a6a3a;
+const BRIDGE_DARK = 0x5d3a1e;
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 1.8;
 const NEUTRAL_FACTION = 'black'; // castle art used for the unclaimed central town center
@@ -63,8 +68,9 @@ function drawBar(g, y, width, fraction, color) {
 
 // Rendering + input only. All game logic runs on the server.
 export class Game {
-  constructor(socket, mount, ui) {
+  constructor(socket, myId, mount, ui) {
     this.socket = socket;
+    this.myId = myId;
     this.mount = mount;
     this.ui = ui; // { hud, tooltip, buildMenu, message }
     this.players = new Map(); // playerId -> { id, name, color, stock }
@@ -96,6 +102,7 @@ export class Game {
 
     this.world = new Container();
     this.app.stage.addChild(this.world);
+    this.tiles = map.tiles;
     this.world.addChild(this.drawGround(map));
     this.fieldsLayer = new Container(); // farm crop fields, on the ground under everything else
     this.world.addChild(this.fieldsLayer);
@@ -122,40 +129,79 @@ export class Game {
 
   // ---------- World ----------
 
-  // Sand is drawn as overlapping blobs and blurred once, so it fades into the grass instead of hard tile edges
+  // Sand and water are drawn as overlapping blobs and blurred, so they fade into the grass instead of
+  // showing hard tile edges. The blur is rendered once into a texture covering the whole map (a live
+  // filter or cacheAsTexture only blurs what is on screen at the time).
   drawGround(map) {
     const ground = new Container();
     const grass = new TilingSprite({ texture: this.assets.grass, width: map.width, height: map.height });
     grass.tileScale.set(TILE_SIZE / 64);
 
-    const sand = new Container();
-    const base = new Graphics();
-    const light = new Graphics();
-    const isSand = (tx, ty) => map.tiles[ty * MAP_TILES + tx] === Terrain.SAND;
-    for (let ty = 0; ty < MAP_TILES; ty++) {
-      for (let tx = 0; tx < MAP_TILES; tx++) {
-        if (!isSand(tx, ty)) continue;
-        const cx = (tx + 0.5) * TILE_SIZE;
-        const cy = (ty + 0.5) * TILE_SIZE;
-        base.circle(cx, cy, TILE_SIZE * 0.85);
-        // Lighter core on tiles surrounded by sand gives the paths some depth
-        const inner = [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => isSand(tx + dx, ty + dy));
-        if (inner) light.circle(cx + ((tx * 7) % 5) - 2, cy + ((ty * 11) % 5) - 2, TILE_SIZE * 0.55);
+    const tileAt = (tx, ty) => map.tiles[ty * MAP_TILES + tx];
+    const is = (terrain) => (tx, ty) => tileAt(tx, ty) === terrain;
+    const isWater = (tx, ty) => tileAt(tx, ty) === Terrain.WATER || tileAt(tx, ty) === Terrain.BRIDGE;
+    // One soft layer per terrain: a base colour plus a lighter core on tiles surrounded by the same terrain
+    const blobs = (match, radius, color, coreColor, coreAlpha) => {
+      const base = new Graphics();
+      const core = new Graphics();
+      for (let ty = 0; ty < MAP_TILES; ty++) {
+        for (let tx = 0; tx < MAP_TILES; tx++) {
+          if (!match(tx, ty)) continue;
+          const cx = (tx + 0.5) * TILE_SIZE;
+          const cy = (ty + 0.5) * TILE_SIZE;
+          base.circle(cx, cy, TILE_SIZE * radius);
+          const inner = [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => match(tx + dx, ty + dy));
+          if (inner) core.circle(cx + ((tx * 7) % 5) - 2, cy + ((ty * 11) % 5) - 2, TILE_SIZE * 0.55);
+        }
       }
-    }
-    base.fill(SAND_COLOR);
-    light.fill({ color: SAND_LIGHT, alpha: 0.7 });
-    sand.addChild(base, light);
-    sand.filters = [new BlurFilter({ strength: 10, quality: 4 })];
-    sand.cacheAsTexture({ resolution: 1 }); // a 2x cache of the whole map would exceed the max GPU texture size
-    // Blur spills past the map edge; clip it to the map
-    const sandMask = new Graphics().rect(0, 0, map.width, map.height).fill(0xffffff);
-    sand.mask = sandMask;
-    ground.addChild(sandMask);
+      base.fill(color);
+      core.fill({ color: coreColor, alpha: coreAlpha });
+      return [base, core];
+    };
+    const soft = new Container();
+    soft.addChild(
+      ...blobs(is(Terrain.SAND), 0.85, SAND_COLOR, SAND_LIGHT, 0.7),
+      ...blobs(isWater, 0.95, WATER_BANK, WATER_COLOR, 1),
+      ...blobs(isWater, 0.6, WATER_COLOR, WATER_LIGHT, 0.5),
+    );
+    soft.filters = [new BlurFilter({ strength: 10, quality: 4 })];
+    // Rendered at 1x: a 2x texture of the whole map would exceed the max GPU texture size
+    const texture = this.app.renderer.generateTexture({
+      target: soft, frame: new Rectangle(0, 0, map.width, map.height), resolution: 1,
+    });
+    soft.destroy({ children: true });
 
     const border = new Graphics().rect(0, 0, map.width, map.height).stroke({ width: 4, color: 0x222222 });
-    ground.addChild(grass, sand, border);
+    ground.addChild(grass, new Sprite(texture), this.drawBridges(map, is(Terrain.BRIDGE), isWater), border);
     return ground;
+  }
+
+  // Wooden planks across the river, with rails along the water on both sides
+  drawBridges(map, isBridge, isWater) {
+    const g = new Graphics();
+    for (let ty = 0; ty < MAP_TILES; ty++) {
+      for (let tx = 0; tx < MAP_TILES; tx++) {
+        if (!isBridge(tx, ty)) continue;
+        const x = tx * TILE_SIZE;
+        const y = ty * TILE_SIZE;
+        // Crossing direction: a bridge tile with water left/right is walked up/down
+        const vertical = (isWater(tx - 1, ty) && !isBridge(tx - 1, ty)) || (isWater(tx + 1, ty) && !isBridge(tx + 1, ty));
+        g.rect(x, y, TILE_SIZE, TILE_SIZE).fill(BRIDGE_COLOR);
+        for (let k = 1; k < 5; k++) {
+          const o = (k * TILE_SIZE) / 5;
+          if (vertical) g.rect(x, y + o - 1, TILE_SIZE, 2).fill(BRIDGE_DARK);
+          else g.rect(x + o - 1, y, 2, TILE_SIZE).fill(BRIDGE_DARK);
+        }
+        // Rails on the sides that face open water
+        const sides = vertical
+          ? [[-1, 0, x, y, 4, TILE_SIZE], [1, 0, x + TILE_SIZE - 4, y, 4, TILE_SIZE]]
+          : [[0, -1, x, y, TILE_SIZE, 4], [0, 1, x, y + TILE_SIZE - 4, TILE_SIZE, 4]];
+        for (const [dx, dy, rx, ry, w, h] of sides) {
+          if (isWater(tx + dx, ty + dy) && !isBridge(tx + dx, ty + dy)) g.rect(rx, ry, w, h).fill(BRIDGE_DARK);
+        }
+      }
+    }
+    return g;
   }
 
   // Trees and bushes sway, sheep graze, gold uses one of the stone variants; all anchored at the tile's bottom
@@ -207,7 +253,7 @@ export class Game {
   applyState({ players, entities }) {
     if (!this.objects) return;
     this.players = new Map(players.map((p) => [p.id, p]));
-    const me = this.players.get(this.socket.id);
+    const me = this.players.get(this.myId);
     if (me) {
       this.stock = me.stock;
       this.pop = { used: me.pop, cap: me.popCap };
@@ -295,7 +341,7 @@ export class Game {
 
   // Center the camera on this player's town center
   focusOnBase() {
-    const tc = [...this.sprites.values()].find((s) => s.owner === this.socket.id && s.type === 'townCenter');
+    const tc = [...this.sprites.values()].find((s) => s.owner === this.myId && s.type === 'townCenter');
     if (!tc) return;
     const k = this.world.scale.x;
     this.world.position.set(this.app.screen.width / 2 - tc.x * k, this.app.screen.height / 2 - tc.y * k);
@@ -339,6 +385,8 @@ export class Game {
   // Tiles taken by resources or buildings, as known by the client
   isTileBlocked = (x, y) => {
     if (this.resourceAt.has(tileKey(x, y))) return true;
+    const terrain = this.tiles?.[y * MAP_TILES + x];
+    if (terrain === Terrain.WATER || terrain === Terrain.BRIDGE) return true;
     for (const s of this.sprites.values()) {
       if (!isBuildingType(s.type)) continue;
       const n = ENTITY_STATS[s.type].tiles;
@@ -588,7 +636,7 @@ export class Game {
 
       // Building preview in the player's own faction
       const art = BUILDING_ART[this.placing];
-      const texture = this.assets.buildings[this.factionOf(this.socket.id)][art.texture];
+      const texture = this.assets.buildings[this.factionOf(this.myId)][art.texture];
       this.ghost.texture = texture;
       this.ghost.scale.set((size * art.widthFactor) / texture.width);
       this.ghost.position.set(tx * TILE_SIZE + size / 2, ty * TILE_SIZE + size / 2 + spriteBottom(this.placing));
@@ -622,7 +670,7 @@ export class Game {
   // ---------- UI ----------
 
   renderHud() {
-    const mine = [...this.sprites.values()].filter((s) => s.owner === this.socket.id);
+    const mine = [...this.sprites.values()].filter((s) => s.owner === this.myId);
     const villagers = mine.filter((s) => s.type === 'villager');
     const idle = villagers.filter((s) => !s.task).length;
     const army = mine.filter((s) => !isBuildingType(s.type) && s.type !== 'villager').length;
@@ -639,7 +687,7 @@ export class Game {
     if (central) {
       const holder = this.players.get(central.owner);
       items.push(['👑 Centro', holder
-        ? `${holder.id === this.socket.id ? 'Tú' : holder.name} ${formatTime(central.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)}`
+        ? `${holder.id === this.myId ? 'Tú' : holder.name} ${formatTime(central.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)}`
         : 'neutral']);
     }
     this.ui.hud.replaceChildren(...items.map(([label, value, warn]) => {
@@ -668,7 +716,7 @@ export class Game {
       const btn = document.createElement('button');
       btn.dataset.type = type;
       const img = document.createElement('img');
-      img.src = `/assets/${this.factionOf(this.socket.id)}/${BUILDING_ART[type].texture}.png`;
+      img.src = `/assets/${this.factionOf(this.myId)}/${BUILDING_ART[type].texture}.png`;
       img.alt = '';
       const name = document.createElement('strong');
       name.textContent = stats.name;
@@ -710,7 +758,7 @@ export class Game {
     if (!s) return null;
     const stats = ENTITY_STATS[s.type];
     const owner = this.players.get(s.owner)?.name ?? 'neutral';
-    const mine = s.owner === this.socket.id;
+    const mine = s.owner === this.myId;
     const name = s.central ? 'Centro urbano central' : stats.name;
     const lines = [`${name} (${mine ? 'tú' : owner}) — PV ${s.hp}/${stats.hp}`];
 
@@ -799,7 +847,7 @@ export class Game {
   click(worldPoint) {
     const id = this.entityAt(worldPoint.x, worldPoint.y);
     const s = id != null ? this.sprites.get(id) : null;
-    if (!s || s.owner !== this.socket.id) { this.selected.clear(); return; }
+    if (!s || s.owner !== this.myId) { this.selected.clear(); return; }
     this.selected = new Set([id]);
     const farm = ENTITY_STATS[s.type].farm;
     if (farm && s.built && s.food <= 0) {
@@ -824,7 +872,7 @@ export class Game {
     const y1 = Math.min(a.y, b.y);
     const y2 = Math.max(a.y, b.y);
     const mine = [...this.sprites].filter(([, s]) => (
-      s.owner === this.socket.id && !isBuildingType(s.type)
+      s.owner === this.myId && !isBuildingType(s.type)
       && s.g.x >= x1 && s.g.x <= x2 && s.g.y >= y1 && s.g.y <= y2
     ));
     this.selected = new Set(mine.map(([id]) => id));
@@ -840,16 +888,16 @@ export class Game {
       return;
     }
     const s = target?.kind === 'entity' ? this.sprites.get(target.id) : null;
-    if (s && isBuildingType(s.type) && !s.built && s.owner === this.socket.id) {
+    if (s && isBuildingType(s.type) && !s.built && s.owner === this.myId) {
       this.socket.emit('game:construct', { unitIds, buildingId: target.id });
       return;
     }
-    if (s && ENTITY_STATS[s.type].farm && s.built && s.owner === this.socket.id) {
+    if (s && ENTITY_STATS[s.type].farm && s.built && s.owner === this.myId) {
       this.socket.emit('game:farm', { unitIds, buildingId: target.id });
       return;
     }
     // Enemies, the neutral central town center, or a fallen one (villagers capture it)
-    if (s && (s.owner !== this.socket.id || (s.central && s.hp <= 0))) {
+    if (s && (s.owner !== this.myId || (s.central && s.hp <= 0))) {
       this.socket.emit('game:attack', { unitIds, targetId: target.id });
       return;
     }

@@ -1,7 +1,17 @@
 import { io } from 'socket.io-client';
 import { Game } from './game.js';
 
-const socket = io(import.meta.env.DEV ? `http://${location.hostname}:3001` : undefined);
+// Secret per-tab token: after a dropped connection or a reload the server recognises this player
+// and puts them back in their game
+const newToken = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+let token;
+try {
+  token = sessionStorage.getItem('playerToken');
+  if (!token) sessionStorage.setItem('playerToken', token = newToken());
+} catch { token = newToken(); }
+const socket = io(import.meta.env.DEV ? `http://${location.hostname}:3001` : undefined, { auth: { token } });
+let myId = null; // public player id, sent by the server on connect
+socket.on('session', ({ playerId }) => { myId = playerId; });
 const $ = (id) => document.getElementById(id);
 const hex = (color) => `#${color.toString(16).padStart(6, '0')}`;
 
@@ -61,7 +71,7 @@ socket.on('room:update', (room) => {
   currentRoom = room;
   $('lobby-error').textContent = '';
   $('room-title').textContent = room.name;
-  const isHost = room.hostId === socket.id;
+  const isHost = room.hostId === myId;
   $('room-info').textContent = isHost
     ? 'Eres el anfitrión. Inicia la partida cuando estén todos.'
     : 'Esperando a que el anfitrión inicie la partida…';
@@ -74,7 +84,7 @@ socket.on('room:update', (room) => {
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = hex(p.color);
-    name.append(swatch, `${p.name}${p.id === socket.id ? ' (tú)' : ''}`);
+    name.append(swatch, `${p.name}${p.id === myId ? ' (tú)' : ''}`);
     const tag = document.createElement('span');
     tag.className = 'muted';
     tag.textContent = p.id === room.hostId ? 'anfitrión' : '';
@@ -100,7 +110,9 @@ socket.on('room:left', () => {
 // ---- Game ----
 socket.on('game:start', async (data) => {
   show('game');
-  game = new Game(socket, $('game'), {
+  $('game-over').classList.add('hidden');
+  game?.destroy();
+  game = new Game(socket, myId, $('game'), {
     hud: $('hud'), tooltip: $('tooltip'), buildMenu: $('build-menu'), message: $('message'),
   });
   await game.init(data);
@@ -183,7 +195,7 @@ socket.on('game:defeated', () => showEndScreen({
 socket.on('game:over', ({
   winnerId, winnerName, winnerFaction, reason, duration, players,
 }) => {
-  const won = winnerId === socket.id;
+  const won = winnerId === myId;
   const text = winnerName ? `¡${won ? 'Tu reino' : winnerName} ${reason}!` : `Sin ganador: ${reason}.`;
   showEndScreen({
     title: won ? '¡VICTORIA!' : (winnerName ? 'FIN DE LA PARTIDA' : 'EMPATE'),
