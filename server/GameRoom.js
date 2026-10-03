@@ -12,6 +12,8 @@ import { findPath, clearLine } from './pathfinding.js';
 
 const DT = 1 / TICK_RATE;
 const RETARGET_RADIUS = 400; // how far a villager looks for more of the same resource
+const STUCK_TICKS = TICK_RATE * 2; // a gatherer that gets no closer for this long picks another resource
+const CROWD_PENALTY = 60; // px a resource counts as farther away per villager already working it
 const SEPARATION_CELL = 32; // grid cell size for unit collision lookups (>= largest unit diameter)
 const SEPARATION_ITERATIONS = 4;
 const COLLISION_PADDING = 3; // units keep this much extra space between each other, matching their sprites
@@ -591,6 +593,13 @@ export class GameRoom {
       if (resource.owner) { u.task = null; return; }
     }
     const reach = isSheep(resource) ? SHEEP.radius + stats.radius + 4 : TILE_SIZE / 2 + stats.radius;
+    if (this.gathererStuck(u, resource, reach)) {
+      const other = this.alternativeResource(u, resource);
+      if (other) {
+        task.resourceId = other.id;
+        return;
+      }
+    }
     if (!this.moveToward(u, resource.x, resource.y, reach)) return;
 
     u.action = 'gathering';
@@ -618,6 +627,42 @@ export class GameRoom {
   dropOffsOf(owner) {
     return [...this.entities.values()].filter((e) => e.owner === owner && e.built
       && (e.type === EntityType.TOWN_CENTER || ENTITY_STATS[e.type].dropOff));
+  }
+
+  // True when a gatherer walking to its resource hasn't got any closer for STUCK_TICKS (other villagers
+  // in the way, or no path)
+  gathererStuck(u, resource, reach) {
+    const { task } = u;
+    const dist = Math.hypot(resource.x - u.x, resource.y - u.y);
+    if (task.trackedId !== resource.id || dist <= reach || dist < task.bestDist - 2) {
+      task.trackedId = resource.id;
+      task.bestDist = dist;
+      task.stuckTicks = 0;
+      return false;
+    }
+    if (++task.stuckTicks < STUCK_TICKS) return false;
+    task.stuckTicks = 0;
+    task.bestDist = Infinity; // give the new target a fresh start
+    return true;
+  }
+
+  // Another reachable resource of the same type nearby, preferring ones fewer villagers are working on
+  alternativeResource(u, current) {
+    const workers = new Map();
+    for (const e of this.entities.values()) {
+      if (e.task?.type === 'gather') workers.set(e.task.resourceId, (workers.get(e.task.resourceId) ?? 0) + 1);
+    }
+    let best = null;
+    let bestScore = Infinity;
+    for (const r of this.resources.values()) {
+      if (r.id === current.id || r.type !== current.type) continue;
+      if (!this.isExposed(r) || (isSheep(r) && r.owner !== u.owner)) continue;
+      const d = Math.hypot(r.x - u.x, r.y - u.y);
+      if (d > RETARGET_RADIUS) continue;
+      const score = d + (workers.get(r.id) ?? 0) * CROWD_PENALTY;
+      if (score < bestScore) { best = r; bestScore = score; }
+    }
+    return best;
   }
 
   // Walks the villager's load to the closest drop-off and adds it to the stock
