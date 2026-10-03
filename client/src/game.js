@@ -34,8 +34,8 @@ const UNIT_ART = {
 // Units that fight in the army; one in every FLAG_EVERY of them carries the player's flag
 const SOLDIERS = new Set(['swordsman', 'archer', 'horseman']);
 const FLAG_EVERY = 5;
-const FLAG_SIZE = { width: 24, height: 16 };
-const FLAG_POLE = 36; // px above the unit's centre
+const FLAG_SIZE = { width: 34, height: 23 };
+const FLAG_POLE = 58; // px above the unit's centre
 const RESOURCE_COLORS = {
   gold: 0xffd34d, food: 0xe57373, wood: 0x8bc34a, stone: 0xb0b0b0,
 };
@@ -77,16 +77,9 @@ const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor
 // Bottom of a building's sprite relative to its centre (farmhouses stand on the middle tile)
 const spriteBottom = (type) => (BUILDING_ART[type].centerTile ? TILE_SIZE / 2 : buildingSize(type) / 2) + 4;
 
-// Flag textures per player id from their hand-drawn shapes (white on transparent, tinted at draw time);
-// the null key holds a plain rectangular flag for players who didn't draw one
+// Flag textures per player id from their hand-drawn shapes (white on transparent, tinted at draw time)
 async function loadFlags(players) {
   const textures = new Map();
-  const plain = document.createElement('canvas');
-  plain.width = FLAG_SIZE.width * 2;
-  plain.height = FLAG_SIZE.height * 2;
-  plain.getContext('2d').fillStyle = '#fff';
-  plain.getContext('2d').fillRect(0, 0, plain.width, plain.height);
-  textures.set(null, Texture.from(plain));
   await Promise.all(players.filter((p) => p.flag).map(async (p) => {
     try {
       const img = new Image();
@@ -729,12 +722,23 @@ export class Game {
     }
     if (!s.flag) {
       s.flag = new Container();
-      const pole = new Graphics().rect(-1, -FLAG_POLE, 2, FLAG_POLE + 6).fill(0x5d3a1e);
-      const cloth = new Sprite(this.flagTextures.get(s.owner) ?? this.flagTextures.get(null));
-      cloth.width = FLAG_SIZE.width;
-      cloth.height = FLAG_SIZE.height;
-      cloth.position.set(1, -FLAG_POLE);
-      cloth.tint = this.colorOf(s.owner);
+      const pole = new Graphics().rect(-1.5, -FLAG_POLE - 3, 3, FLAG_POLE + 9).fill(0x5d3a1e)
+        .circle(0, -FLAG_POLE - 4, 3).fill(0xd4a017); // gold finial
+      // White cloth with the player's drawing on it in their colour; a plain flag in their colour otherwise
+      const cloth = new Container();
+      cloth.position.set(1.5, -FLAG_POLE);
+      const color = this.colorOf(s.owner);
+      const drawing = this.flagTextures.get(s.owner);
+      const border = new Graphics().rect(0, 0, FLAG_SIZE.width, FLAG_SIZE.height)
+        .fill(drawing ? 0xffffff : color).stroke({ width: 1.5, color: 0x3a2a1a });
+      cloth.addChild(border);
+      if (drawing) {
+        const art = new Sprite(drawing);
+        art.width = FLAG_SIZE.width;
+        art.height = FLAG_SIZE.height;
+        art.tint = color;
+        cloth.addChild(art);
+      }
       s.flag.addChild(pole, cloth);
       s.flag.cloth = cloth;
       s.g.addChildAt(s.flag, s.g.getChildIndex(s.sprite));
