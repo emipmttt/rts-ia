@@ -52,6 +52,7 @@ const LOW_HP_FIRE = 0.5; // buildings below this fraction of hp burn
 const HOVER_COLOR = 0xffffff;
 const SELECT_COLOR = 0x00ff00;
 const CLICK_THRESHOLD = 5; // px of pointer movement before a click becomes a drag-select
+const DOUBLE_CLICK_MS = 350;
 const BUILDABLE = Object.keys(ENTITY_STATS).filter(isBuildingType);
 const NEUTRAL_COLOR = 0x9e9e9e;
 const tileKey = (x, y) => `${x},${y}`;
@@ -848,6 +849,14 @@ export class Game {
     const id = this.entityAt(worldPoint.x, worldPoint.y);
     const s = id != null ? this.sprites.get(id) : null;
     if (!s || s.owner !== this.myId) { this.selected.clear(); return; }
+    // Double click on a unit: select every unit of that type on screen
+    const now = performance.now();
+    const isDouble = this.lastClick?.id === id && now - this.lastClick.time < DOUBLE_CLICK_MS;
+    this.lastClick = isDouble ? null : { id, time: now };
+    if (isDouble && !isBuildingType(s.type)) {
+      this.selected = new Set(this.visibleUnitsOfType(s.type));
+      return;
+    }
     this.selected = new Set([id]);
     const farm = ENTITY_STATS[s.type].farm;
     if (farm && s.built && s.food <= 0) {
@@ -864,6 +873,16 @@ export class Game {
       }
       this.socket.emit('game:train', { buildingId: id });
     }
+  }
+
+  // Ids of own units of the given type inside the visible part of the world
+  visibleUnitsOfType(type) {
+    const topLeft = this.world.toLocal({ x: 0, y: 0 });
+    const bottomRight = this.world.toLocal({ x: this.app.screen.width, y: this.app.screen.height });
+    return [...this.sprites].filter(([, s]) => (
+      s.owner === this.myId && s.type === type
+      && s.g.x >= topLeft.x && s.g.x <= bottomRight.x && s.g.y >= topLeft.y && s.g.y <= bottomRight.y
+    )).map(([id]) => id);
   }
 
   boxSelect(a, b) {
