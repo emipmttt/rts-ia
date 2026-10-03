@@ -10,6 +10,8 @@ import { generateWorld } from './worldgen.js';
 
 const DT = 1 / TICK_RATE;
 const RETARGET_RADIUS = 400; // how far a villager looks for more of the same resource
+const SEPARATION_CELL = 32; // grid cell size for unit collision lookups (>= largest unit diameter)
+const SEPARATION_ITERATIONS = 4;
 
 export const RoomStatus = { WAITING: 'waiting', PLAYING: 'playing', FINISHED: 'finished' };
 
@@ -314,6 +316,56 @@ export class GameRoom {
     return false;
   }
 
+  // Pushes overlapping units apart so they never stack on top of each other
+  separateUnits() {
+    const units = [...this.entities.values()].filter(isUnit);
+    const pushed = new Set();
+    for (let iter = 0; iter < SEPARATION_ITERATIONS; iter++) {
+      const grid = new Map();
+      for (const u of units) {
+        const key = tileKey(Math.floor(u.x / SEPARATION_CELL), Math.floor(u.y / SEPARATION_CELL));
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(u);
+      }
+      let moved = false;
+      for (const a of units) {
+        const cx = Math.floor(a.x / SEPARATION_CELL);
+        const cy = Math.floor(a.y / SEPARATION_CELL);
+        const ra = ENTITY_STATS[a.type].radius;
+        for (let ox = -1; ox <= 1; ox++) for (let oy = -1; oy <= 1; oy++) {
+          for (const b of grid.get(tileKey(cx + ox, cy + oy)) ?? []) {
+            if (b.id <= a.id) continue; // each pair once
+            const minDist = ra + ENTITY_STATS[b.type].radius;
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            let dist = Math.hypot(dx, dy);
+            if (dist >= minDist) continue;
+            if (dist < 0.001) { // exactly stacked: pick a deterministic direction
+              const angle = (a.id * 2.399963) % (Math.PI * 2);
+              dx = Math.cos(angle); dy = Math.sin(angle); dist = 1;
+            }
+            const half = (minDist - dist) / 2;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            a.x = clamp(a.x - nx * half, 0, MAP_WIDTH);
+            a.y = clamp(a.y - ny * half, 0, MAP_HEIGHT);
+            b.x = clamp(b.x + nx * half, 0, MAP_WIDTH);
+            b.y = clamp(b.y + ny * half, 0, MAP_HEIGHT);
+            pushed.add(a); pushed.add(b);
+            moved = true;
+          }
+        }
+      }
+      if (!moved) break;
+    }
+    // A unit with a plain move order that got shoved near its destination settles where it is,
+    // otherwise idle units would keep walking back into each other forever
+    for (const u of pushed) {
+      if (u.task) continue;
+      if (Math.hypot(u.tx - u.x, u.ty - u.y) <= ENTITY_STATS[u.type].radius * 3) { u.tx = u.x; u.ty = u.y; }
+    }
+  }
+
   updateGatherer(u) {
     const { task, carry } = u;
     const stats = ENTITY_STATS[u.type];
@@ -520,6 +572,7 @@ export class GameRoom {
       else if (task === 'capture') this.updateCapturer(e);
       else if (this.moveToward(e, e.tx, e.ty)) this.autoAcquire(e);
     }
+    this.separateUnits();
     if (this.central?.owner) this.central.controlTime += DT;
 
     if (this.shots.length) {
