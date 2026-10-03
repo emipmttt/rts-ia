@@ -156,6 +156,7 @@ export class GameRoom {
       trainProgress: 0,
       cooldown: 0, // towers only
       targetId: null, // towers only
+      food: built ? (ENTITY_STATS[type].farm?.food ?? 0) : 0, // farms only: crops left to harvest
     };
     for (const [cx, cy] of footprint(type, tx, ty)) this.buildingTiles.set(tileKey(cx, cy), id);
     this.entities.set(id, building);
@@ -242,6 +243,25 @@ export class GameRoom {
     const building = this.entities.get(buildingId);
     if (!building || building.owner !== socketId || !isBuilding(building) || building.built) return;
     for (const u of this.ownedVillagers(socketId, unitIds)) u.task = { type: 'build', buildingId };
+  }
+
+  // Assign villagers to harvest a finished farm
+  handleFarm(socketId, { unitIds, buildingId }) {
+    const farm = this.entities.get(buildingId);
+    if (!farm || farm.owner !== socketId || !ENTITY_STATS[farm.type].farm || !farm.built) return;
+    for (const u of this.ownedVillagers(socketId, unitIds)) u.task = { type: 'farm', buildingId };
+  }
+
+  // Replant a harvested farm, paying wood
+  handleReseed(socketId, { buildingId }) {
+    const player = this.players.get(socketId);
+    const farm = this.entities.get(buildingId);
+    const stats = farm && ENTITY_STATS[farm.type].farm;
+    if (!player || !stats || farm.owner !== socketId || !farm.built || this.status !== RoomStatus.PLAYING) return;
+    if (farm.food > 0) return this.error(socketId, 'La siembra aún no se ha acabado');
+    if (!canAfford(player.stock, stats.reseedCost)) return this.error(socketId, 'Recursos insuficientes');
+    for (const [k, v] of Object.entries(stats.reseedCost)) player.stock[k] -= v;
+    farm.food = stats.food;
   }
 
   // Attack an enemy entity. Villagers ordered onto a fallen central town center capture it instead.
@@ -380,19 +400,7 @@ export class GameRoom {
 
     // Full, or nothing left to gather: carry it back to the closest finished town center
     if (carry.amount >= stats.carryCapacity || (!resource && carry.amount > 0)) {
-      const dropOffs = [...this.entities.values()].filter(
-        (e) => e.owner === u.owner && e.type === EntityType.TOWN_CENTER && e.built,
-      );
-      const dropOff = this.closest(dropOffs, u.x, u.y);
-      if (!dropOff) { u.task = null; return; }
-      if (this.moveToward(u, dropOff.x, dropOff.y, buildingSize(dropOff.type) / 2 + stats.radius)) {
-        const player = this.players.get(u.owner);
-        if (player) {
-          player.stock[carry.type] += carry.amount;
-          player.stats.gathered += carry.amount;
-        }
-        carry.amount = 0;
-      }
+      this.deliverCarry(u);
       return;
     }
 
@@ -419,6 +427,55 @@ export class GameRoom {
     }
   }
 
+  // Walks the villager's load to the closest finished town center and adds it to the stock
+  deliverCarry(u) {
+    const dropOffs = [...this.entities.values()].filter(
+      (e) => e.owner === u.owner && e.type === EntityType.TOWN_CENTER && e.built,
+    );
+    const dropOff = this.closest(dropOffs, u.x, u.y);
+    if (!dropOff) { u.task = null; return; }
+    if (!this.moveToward(u, dropOff.x, dropOff.y, buildingSize(dropOff.type) / 2 + ENTITY_STATS[u.type].radius)) return;
+    const player = this.players.get(u.owner);
+    if (player) {
+      player.stock[u.carry.type] += u.carry.amount;
+      player.stats.gathered += u.carry.amount;
+    }
+    u.carry.amount = 0;
+  }
+
+  // Farmers harvest the crop fields around the farm; when the crops run out they drop off what
+  // they carry and wait at the farm until it is reseeded
+  updateFarmer(u) {
+    const farm = this.entities.get(u.task.buildingId);
+    const { carry } = u;
+    const stats = ENTITY_STATS[u.type];
+    if (!farm || farm.owner !== u.owner) {
+      if (carry.amount > 0 && carry.type === 'food') this.deliverCarry(u);
+      else u.task = null;
+      return;
+    }
+    if (carry.amount >= stats.carryCapacity || (farm.food <= 0 && carry.amount > 0 && carry.type === 'food')) {
+      this.deliverCarry(u);
+      return;
+    }
+    // Work on the fields: anywhere within a tile of the farmhouse
+    if (!this.moveToward(u, farm.x, farm.y, TILE_SIZE)) return;
+    if (farm.food <= 0) return;
+
+    u.action = 'gathering';
+    if (carry.type !== 'food') {
+      carry.type = 'food';
+      carry.amount = 0;
+      u.gatherProgress = 0;
+    }
+    u.gatherProgress += RESOURCE_STATS.food.gatherRate * DT;
+    while (u.gatherProgress >= 1 && farm.food > 0 && carry.amount < stats.carryCapacity) {
+      u.gatherProgress -= 1;
+      farm.food -= 1;
+      carry.amount += 1;
+    }
+  }
+
   // Each villager working on a building adds its own build speed, so more villagers = faster
   updateBuilder(u) {
     const building = this.entities.get(u.task.buildingId);
@@ -433,6 +490,7 @@ export class GameRoom {
     if (building.buildProgress >= 1) {
       building.built = true;
       building.hp = stats.hp;
+      if (stats.farm) building.food = stats.farm.food;
     }
   }
 
@@ -570,6 +628,7 @@ export class GameRoom {
       else if (task === 'build') this.updateBuilder(e);
       else if (task === 'attack') this.updateAttacker(e);
       else if (task === 'capture') this.updateCapturer(e);
+      else if (task === 'farm') this.updateFarmer(e);
       else if (this.moveToward(e, e.tx, e.ty)) this.autoAcquire(e);
     }
     this.separateUnits();
@@ -646,14 +705,14 @@ export class GameRoom {
       return {
         ...base, tx: e.tx, ty: e.ty, built: e.built, buildProgress: e.buildProgress,
         queue: e.queue, trainProgress: e.trainProgress,
-        central: !!e.central, controlTime: e.controlTime ?? 0,
+        central: !!e.central, controlTime: e.controlTime ?? 0, food: e.food,
       };
     }
     const capacity = ENTITY_STATS[e.type].carryCapacity ?? 1;
     return {
       ...base,
       task: e.task?.type ?? null,
-      buildingId: e.task?.type === 'build' ? e.task.buildingId : null,
+      buildingId: e.task?.type === 'build' || e.task?.type === 'farm' ? e.task.buildingId : null,
       targetId: e.task?.type === 'attack' ? e.task.targetId : null,
       action: e.action,
       carry: e.carry,

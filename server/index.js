@@ -33,6 +33,8 @@ io.on('connection', (socket) => {
   socket.on('game:build', (order) => lobby.roomOf(socket)?.handleBuild(socket.id, order ?? {}));
   socket.on('game:construct', (order) => lobby.roomOf(socket)?.handleConstruct(socket.id, order ?? {}));
   socket.on('game:train', (order) => lobby.roomOf(socket)?.handleTrain(socket.id, order ?? {}));
+  socket.on('game:farm', (order) => lobby.roomOf(socket)?.handleFarm(socket.id, order ?? {}));
+  socket.on('game:reseed', (order) => lobby.roomOf(socket)?.handleReseed(socket.id, order ?? {}));
   socket.on('game:attack', (order) => lobby.roomOf(socket)?.handleAttack(socket.id, order ?? {}));
 
   socket.on('disconnect', () => {

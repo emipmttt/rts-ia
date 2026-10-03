@@ -36,6 +36,7 @@ export const EntityType = {
   STABLE: 'stable',
   TOWER: 'tower',
   HOUSE: 'house',
+  FARM: 'farm',
   VILLAGER: 'villager',
   SWORDSMAN: 'swordsman',
   ARCHER: 'archer',
@@ -54,6 +55,12 @@ export const ENTITY_STATS = {
   },
   [EntityType.HOUSE]: {
     kind: 'building', name: 'Casa', tiles: 1, hp: 500, cost: { wood: 30 }, buildTime: 15, population: 5,
+  },
+  // Farm: a small house surrounded by crop fields. Villagers assigned to it harvest food until the
+  // crops run out; reseeding costs wood.
+  [EntityType.FARM]: {
+    kind: 'building', name: 'Granja', tiles: 3, hp: 300, cost: { wood: 60 }, buildTime: 20,
+    farm: { food: 250, reseedCost: { wood: 40 } },
   },
   [EntityType.BARRACKS]: {
     kind: 'building', name: 'Cuartel', tiles: 2, hp: 1200, cost: { wood: 150 }, buildTime: 25, trains: EntityType.SWORDSMAN,

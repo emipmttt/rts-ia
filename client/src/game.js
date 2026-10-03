@@ -31,7 +31,12 @@ const BUILDING_ART = {
   stable: { texture: 'monastery', widthFactor: 1.15 },
   tower: { texture: 'tower', widthFactor: 1.5 },
   house: { texture: 'house1', variants: ['house1', 'house2', 'house3'], widthFactor: 1.3 },
+  // Farmhouse sits on the middle tile; the crop fields around it are drawn separately
+  farm: { texture: 'house2', widthFactor: 0.45, centerTile: true },
 };
+// Crop fields: rows and plants per field tile
+const FIELD_ROWS = 3;
+const FIELD_PLANTS = 4;
 // Seconds per full animation cycle, so long and short sheets play at a natural pace.
 // Attacks use the unit's own cooldown so each swing matches a hit.
 const ANIM_CYCLE = { idle: 1.2, run: 0.75, work: 0.9 };
@@ -46,6 +51,9 @@ const BUILDABLE = Object.keys(ENTITY_STATS).filter(isBuildingType);
 const NEUTRAL_COLOR = 0x9e9e9e;
 const tileKey = (x, y) => `${x},${y}`;
 const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+
+// Bottom of a building's sprite relative to its centre (farmhouses stand on the middle tile)
+const spriteBottom = (type) => (BUILDING_ART[type].centerTile ? TILE_SIZE / 2 : buildingSize(type) / 2) + 4;
 
 // Draws a progress bar centred at (0, y) on graphics g
 function drawBar(g, y, width, fraction, color) {
@@ -89,6 +97,8 @@ export class Game {
     this.world = new Container();
     this.app.stage.addChild(this.world);
     this.world.addChild(this.drawGround(map));
+    this.fieldsLayer = new Container(); // farm crop fields, on the ground under everything else
+    this.world.addChild(this.fieldsLayer);
     // Units, buildings and trees share one layer sorted by their base y, so things lower on screen draw in front
     this.objects = new Container({ sortableChildren: true });
     this.effects = new Graphics(); // tower range circles
@@ -219,6 +229,7 @@ export class Game {
       if (isBuildingType(s.type)) this.spawnFx(s.id % 2 ? 'explosion1' : 'explosion2', s.x, s.y, buildingSize(s.type) / 120);
       else this.spawnFx('dust1', s.g.x, s.g.y, 0.7);
       s.g.destroy({ children: true });
+      s.fields?.destroy();
       this.sprites.delete(id);
       this.selected.delete(id);
     }
@@ -250,8 +261,13 @@ export class Game {
     if (fire) g.addChild(fire);
     g.addChild(over);
     this.objects.addChild(g);
+    let fields = null;
+    if (ENTITY_STATS[e.type].farm) {
+      fields = new Graphics();
+      this.fieldsLayer.addChild(fields);
+    }
     return {
-      g, under, over, sprite, fire, anim: 'idle', facing: 1,
+      g, under, over, sprite, fire, fields, anim: 'idle', facing: 1,
     };
   }
 
@@ -413,7 +429,7 @@ export class Game {
       s.sprite.texture = texture;
       s.sprite.scale.set((size * art.widthFactor) / texture.width);
     }
-    s.sprite.y = half + 4;
+    s.sprite.y = spriteBottom(s.type);
     s.sprite.alpha = s.built ? 1 : 0.35 + 0.5 * s.buildProgress;
     s.sprite.tint = fallen ? 0x555555 : (s.central && !s.owner ? 0xbbbbbb : 0xffffff);
 
@@ -433,7 +449,11 @@ export class Game {
     if (isSelected) under.ellipse(0, half - 4, half + 8, half / 2.5).stroke({ width: 2, color: SELECT_COLOR });
 
     const g = s.over.clear();
-    const top = half + 4 - s.sprite.height;
+    const top = spriteBottom(s.type) - s.sprite.height;
+    if (stats.farm) {
+      this.drawFields(s);
+      if (s.built) drawBar(g, half + 8, size, s.food / stats.farm.food, 0xe5c04a);
+    }
     if (!s.built) drawBar(g, half + 8, size, s.buildProgress, 0xf0a030);
     if (s.central) {
       // Crown above the central town center
@@ -450,6 +470,35 @@ export class Game {
       this.effects.circle(s.x, s.y, stats.attack.range).stroke({ width: 1, color, alpha: 0.6 });
     }
     if (s.hp < stats.hp && s.built && !fallen) drawBar(g, top - 2, size, s.hp / stats.hp, 0x4caf50);
+  }
+
+  // Tilled soil on every footprint tile except the farmhouse's; plants disappear as food is harvested
+  drawFields(s) {
+    const { food: max } = ENTITY_STATS[s.type].farm;
+    const key = s.built ? `${s.food}` : `b${Math.round(s.buildProgress * 10)}`;
+    if (s.fieldsKey === key) return;
+    s.fieldsKey = key;
+    const g = s.fields.clear();
+    g.alpha = s.built ? 1 : 0.35 + 0.5 * s.buildProgress;
+    const tiles = footprint(s.type, s.tx, s.ty).filter(([x, y]) => x !== s.tx + 1 || y !== s.ty + 1);
+    const total = tiles.length * FIELD_ROWS * FIELD_PLANTS;
+    let plants = s.built ? Math.ceil((s.food / max) * total) : 0;
+    const ripe = s.food / max > 0.5 ? 0xe5c04a : 0x9ccc65; // golden wheat while full, greener when thin
+    for (const [x, y] of tiles) {
+      const px = x * TILE_SIZE;
+      const py = y * TILE_SIZE;
+      g.roundRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4, 4).fill(0x8a5a32).stroke({ width: 1, color: 0x5d3a1e });
+      for (let row = 0; row < FIELD_ROWS; row++) {
+        const ry = py + 9 + row * 11;
+        g.rect(px + 5, ry + 2, TILE_SIZE - 10, 2).fill(0x5d3a1e); // furrow
+        for (let i = 0; i < FIELD_PLANTS; i++) {
+          if (plants <= 0) break;
+          plants--;
+          const cx = px + 9 + i * 7.5;
+          g.poly([cx - 2.5, ry + 3, cx, ry - 5, cx + 2.5, ry + 3]).fill(ripe);
+        }
+      }
+    }
   }
 
   drawUnit(s, isSelected) {
@@ -542,7 +591,7 @@ export class Game {
       const texture = this.assets.buildings[this.factionOf(this.socket.id)][art.texture];
       this.ghost.texture = texture;
       this.ghost.scale.set((size * art.widthFactor) / texture.width);
-      this.ghost.position.set(tx * TILE_SIZE + size / 2, ty * TILE_SIZE + size + 4);
+      this.ghost.position.set(tx * TILE_SIZE + size / 2, ty * TILE_SIZE + size / 2 + spriteBottom(this.placing));
       this.ghost.tint = valid ? 0xffffff : 0xff8080;
       this.ghost.visible = true;
       return;
@@ -628,6 +677,7 @@ export class Game {
       const trains = document.createElement('small');
       if (stats.trains) trains.textContent = `Entrena ${ENTITY_STATS[stats.trains].name}`;
       else if (stats.attack) trains.textContent = `Dispara flechas · alcance ${stats.attack.range}`;
+      else if (stats.farm) trains.textContent = `${stats.farm.food} comida por siembra · resembrar: ${formatCost(stats.farm.reseedCost)}`;
       else trains.textContent = `+${stats.population} población`;
       const text = document.createElement('span');
       text.className = 'text';
@@ -676,6 +726,11 @@ export class Game {
         lines.push(`Dispara a unidades enemigas: ${stats.attack.damage} daño cada ${stats.attack.cooldown}s · alcance ${stats.attack.range}`);
       }
       if (stats.population) lines.push(`+${stats.population} población`);
+      if (stats.farm && s.built) {
+        lines.push(`Siembra: ${s.food}/${stats.farm.food} comida`);
+        if (mine && s.food > 0) lines.push('Clic derecho con aldeanos para cultivar');
+        if (mine && s.food <= 0) lines.push(`¡Cosecha agotada! Clic para resembrar: ${formatCost(stats.farm.reseedCost)}`);
+      }
       if (!s.built) {
         lines.push(`En construcción: ${Math.floor(s.buildProgress * 100)}%`);
         if (mine) lines.push('Clic derecho con aldeanos para ayudar a construir');
@@ -746,6 +801,12 @@ export class Game {
     const s = id != null ? this.sprites.get(id) : null;
     if (!s || s.owner !== this.socket.id) { this.selected.clear(); return; }
     this.selected = new Set([id]);
+    const farm = ENTITY_STATS[s.type].farm;
+    if (farm && s.built && s.food <= 0) {
+      if (!canAfford(this.stock, farm.reseedCost)) return this.showMessage('Recursos insuficientes');
+      this.socket.emit('game:reseed', { buildingId: id });
+      return;
+    }
     if (isBuildingType(s.type) && s.built && ENTITY_STATS[s.type].trains) {
       const unit = ENTITY_STATS[ENTITY_STATS[s.type].trains];
       if (!canAfford(this.stock, unit.cost)) return this.showMessage('Recursos insuficientes');
@@ -781,6 +842,10 @@ export class Game {
     const s = target?.kind === 'entity' ? this.sprites.get(target.id) : null;
     if (s && isBuildingType(s.type) && !s.built && s.owner === this.socket.id) {
       this.socket.emit('game:construct', { unitIds, buildingId: target.id });
+      return;
+    }
+    if (s && ENTITY_STATS[s.type].farm && s.built && s.owner === this.socket.id) {
+      this.socket.emit('game:farm', { unitIds, buildingId: target.id });
       return;
     }
     // Enemies, the neutral central town center, or a fallen one (villagers capture it)
