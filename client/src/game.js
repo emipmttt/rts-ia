@@ -39,7 +39,6 @@ const FLAG_POLE = 36; // px above the unit's centre
 const RESOURCE_COLORS = {
   gold: 0xffd34d, food: 0xe57373, wood: 0x8bc34a, stone: 0xb0b0b0,
 };
-const STONE_TINT = 0x9aa0a6;
 const HEAL_COLOR = 0x7dff7a;
 const WORK_SOUND_MS = 900; // a gathering/building villager makes a sound this often
 const HEAL_SOUND_MS = 1500;
@@ -267,10 +266,9 @@ export class Game {
       g.anchor.set(0.5, 0.8);
       g.scale.set(0.38);
     } else if (r.type === ResourceType.STONE) {
-      g = new Sprite(this.assets.gold[r.id % this.assets.gold.length]);
-      g.anchor.set(0.5, 0.75);
-      g.scale.set(0.42);
-      g.tint = STONE_TINT;
+      g = new Sprite(this.assets.stone[r.id % this.assets.stone.length]);
+      g.anchor.set(0.5, 0.8);
+      g.scale.set(0.8);
     } else if (r.type === ResourceType.WOOD) {
       g = animated(this.assets.trees[r.id % this.assets.trees.length], 0.1);
       g.anchor.set(0.5, 0.92);

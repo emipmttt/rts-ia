@@ -14,6 +14,7 @@ const UNIT_SHEETS = {
 const BUILDINGS = ['castle', 'barracks', 'archery', 'monastery', 'tower', 'house1', 'house2', 'house3'];
 const TREE_COUNT = 4;
 const GOLD_COUNT = 6;
+const STONE_COUNT = 4;
 const BUSH_COUNT = 4;
 // Particle strips: name -> frame size
 const FX = {
@@ -34,7 +35,7 @@ function sliceStrip(texture, frameWidth) {
  * @returns {{
  *   units: Record<string, Record<string, Texture[]>>,  // faction -> sheet -> frames
  *   buildings: Record<string, Record<string, Texture>>, // faction -> building -> texture
- *   trees: Texture[][], bushes: Texture[][], gold: Texture[], sheep: { idle, grass: Texture[] },
+ *   trees: Texture[][], bushes: Texture[][], gold: Texture[], stone: Texture[], sheep: { idle, grass: Texture[] },
  *   fx: Record<string, Texture[]>, grass: Texture, arrow: Texture
  * }}
  */
@@ -46,6 +47,7 @@ export async function loadAssets() {
   }
   for (let i = 1; i <= TREE_COUNT; i++) urls.push(`${BASE}/terrain/tree${i}.png`);
   for (let i = 1; i <= GOLD_COUNT; i++) urls.push(`${BASE}/terrain/gold${i}.png`);
+  for (let i = 1; i <= STONE_COUNT; i++) urls.push(`${BASE}/terrain/stone${i}.png`);
   for (let i = 1; i <= BUSH_COUNT; i++) urls.push(`${BASE}/terrain/bush${i}.png`);
   for (const name of Object.keys(FX)) urls.push(`${BASE}/fx/${name}.png`);
   urls.push(
@@ -69,6 +71,8 @@ export async function loadAssets() {
   for (let i = 1; i <= TREE_COUNT; i++) trees.push(sliceStrip(tex[`${BASE}/terrain/tree${i}.png`], 192));
   const gold = [];
   for (let i = 1; i <= GOLD_COUNT; i++) gold.push(tex[`${BASE}/terrain/gold${i}.png`]);
+  const stone = [];
+  for (let i = 1; i <= STONE_COUNT; i++) stone.push(tex[`${BASE}/terrain/stone${i}.png`]);
   const bushes = [];
   for (let i = 1; i <= BUSH_COUNT; i++) bushes.push(sliceStrip(tex[`${BASE}/terrain/bush${i}.png`], 128));
   const sheep = {
@@ -82,6 +86,6 @@ export async function loadAssets() {
   const grass = new Texture({ source: tilemap.source, frame: new Rectangle(64, 64, 64, 64) });
 
   return {
-    units, buildings, trees, bushes, gold, sheep, fx, grass, arrow: tex[`${BASE}/terrain/arrow.png`],
+    units, buildings, trees, bushes, gold, stone, sheep, fx, grass, arrow: tex[`${BASE}/terrain/arrow.png`],
   };
 }
