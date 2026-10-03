@@ -171,3 +171,8 @@ button:disabled { filter: grayscale(0.9) brightness(0.8); cursor: default; }
 #mute-btn {
   position: fixed; top: 8px; right: 8px; z-index: 30; padding: 4px 8px; font-size: 16px; line-height: 1; min-height: 0;
 }
+
+/* Match options in the waiting room */
+.setting { display: flex; align-items: center; gap: 8px; margin: 8px 0; cursor: pointer; }
+.setting input { width: 18px; height: 18px; }
+.setting input:disabled { cursor: default; }

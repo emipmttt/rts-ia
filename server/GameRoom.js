@@ -59,6 +59,7 @@ export class GameRoom {
     this.shots = []; // arrows fired this tick, sent to clients for the animation
     this.world = null;
     this.central = null; // the neutral, indestructible town center in the middle of the map
+    this.settings = { central: true }; // chosen by the host before starting
     this.startingPlayers = 0;
     this.nextEntityId = 1;
     this.interval = null;
@@ -75,7 +76,16 @@ export class GameRoom {
       status: this.status,
       players: this.players.size,
       max: MAX_PLAYERS_PER_ROOM,
+      settings: this.settings,
     };
+  }
+
+  // Host-only match options, while the room is waiting
+  updateSettings(playerId, { central } = {}) {
+    if (playerId !== this.hostId || this.status !== RoomStatus.WAITING) return;
+    if (typeof central === 'boolean') this.settings.central = central;
+    this.broadcastRoom();
+    this.onStatusChange();
   }
 
   details() {
@@ -136,6 +146,18 @@ export class GameRoom {
     }
     for (const [playerId, point] of spawns) this.spawnPlayer(playerId, point);
 
+    if (this.settings.central) this.spawnCentral(mapCenter);
+
+    this.world.tiles.forEach((t, i) => { if (t === Terrain.WATER) this.walkBlocked[i] = 1; });
+    for (const r of this.resources.values()) if (isSolidResource(r)) this.walkBlocked[r.ty * this.mapTiles + r.tx] = 1;
+
+    this.io.to(this.id).emit('game:start', this.startPayload());
+    this.interval = setInterval(() => this.tick(), 1000 / TICK_RATE);
+    this.broadcastRoom();
+  }
+
+  // The neutral central town center and the knights guarding it
+  spawnCentral(mapCenter) {
     const { tx, ty } = tileForCenter(EntityType.TOWN_CENTER, mapCenter.x, mapCenter.y);
     this.central = this.addBuilding(EntityType.TOWN_CENTER, null, tx, ty, true);
     this.central.central = true;
@@ -149,13 +171,6 @@ export class GameRoom {
       const guard = this.addUnit(EntityType.GUARD, null, mapCenter.x + Math.cos(angle) * d, mapCenter.y + Math.sin(angle) * d);
       guard.post = { x: guard.x, y: guard.y };
     }
-
-    this.world.tiles.forEach((t, i) => { if (t === Terrain.WATER) this.walkBlocked[i] = 1; });
-    for (const r of this.resources.values()) if (isSolidResource(r)) this.walkBlocked[r.ty * this.mapTiles + r.tx] = 1;
-
-    this.io.to(this.id).emit('game:start', this.startPayload());
-    this.interval = setInterval(() => this.tick(), 1000 / TICK_RATE);
-    this.broadcastRoom();
   }
 
   // Everything a client needs to draw the game from scratch (at the start, or after reconnecting)
@@ -992,7 +1007,7 @@ export class GameRoom {
       );
       if (hasTownCenter) continue;
       player.defeated = true;
-      if (this.central.owner === player.id) this.loseCentral();
+      if (this.central?.owner === player.id) this.loseCentral();
       for (const e of [...this.entities.values()]) if (e.owner === player.id) this.removeEntity(e);
       this.io.to(player.id).emit('game:defeated');
       this.notice(`${player.name} ha sido derrotado`);

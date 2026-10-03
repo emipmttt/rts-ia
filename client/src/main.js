@@ -121,7 +121,7 @@ socket.on('lobby:rooms', (rooms) => {
     const li = document.createElement('li');
     const label = document.createElement('span');
     const status = { playing: '(en partida)', finished: '(terminada)' }[room.status] ?? '';
-    label.textContent = `${room.name} — ${room.players}/${room.max} ${status}`;
+    label.textContent = `${room.name} — ${room.players}/${room.max} ${status}${room.settings?.central === false ? ' · sin castillo' : ''}`;
     const btn = document.createElement('button');
     btn.textContent = 'Unirse';
     btn.disabled = room.status !== 'waiting' || room.players >= room.max;
@@ -162,10 +162,15 @@ socket.on('room:update', (room) => {
   }
 
   $('start-btn').classList.toggle('hidden', !isHost);
+  // Only the host can change the match options; everyone sees them
+  const central = $('setting-central');
+  central.checked = room.settings?.central !== false;
+  central.disabled = !isHost;
   if (room.status === 'waiting') show('room');
 });
 
 $('start-btn').addEventListener('click', () => socket.emit('room:start'));
+$('setting-central').addEventListener('change', (e) => socket.emit('room:settings', { central: e.target.checked }));
 $('leave-btn').addEventListener('click', () => socket.emit('room:leave'));
 
 socket.on('room:left', () => {

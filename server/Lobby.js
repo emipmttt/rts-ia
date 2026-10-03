@@ -95,6 +95,10 @@ export class Lobby {
     else this.leave(socket);
   }
 
+  settings(socket, settings) {
+    this.roomOf(socket)?.updateSettings(socket.data.playerId, settings);
+  }
+
   start(socket) {
     const room = this.roomOf(socket);
     if (!room) return;
