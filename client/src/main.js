@@ -1,5 +1,8 @@
 import { io } from 'socket.io-client';
 import { Game } from './game.js';
+import {
+  play, startAmbient, stopAmbient, isMuted, setMuted,
+} from './audio.js';
 
 // Secret per-browser token: after a dropped connection, a reload or reopening the browser the server
 // recognises this player and puts them back in their game
@@ -167,6 +170,7 @@ $('leave-btn').addEventListener('click', () => socket.emit('room:leave'));
 
 socket.on('room:left', () => {
   currentRoom = null;
+  stopAmbient();
   $('game-over').classList.add('hidden');
   game?.destroy();
   game = null;
@@ -178,6 +182,8 @@ socket.on('game:start', async (data) => {
   show('game');
   $('game-over').classList.add('hidden');
   game?.destroy();
+  play('start');
+  startAmbient();
   game = new Game(socket, myId, $('game'), {
     hud: $('hud'), tooltip: $('tooltip'), buildMenu: $('build-menu'), message: $('message'),
   });
@@ -250,6 +256,7 @@ const showEndScreen = ({
   $('game-over-text').textContent = text;
   $('game-over-time').textContent = duration ? `Duración de la partida: ${formatDuration(duration)}` : '';
   renderStats(players, winnerId);
+  play(won ? 'victory' : 'defeat');
   if (won) launchConfetti(['#ffd34d', '#fff3c4', '#f0a030', '#3b82f6', '#e74c3c', '#ffffff']);
   else $('confetti').replaceChildren();
   $('spectate-btn').classList.toggle('hidden', !canSpectate);
@@ -273,9 +280,24 @@ $('back-btn').addEventListener('click', () => socket.emit('room:leave'));
 
 socket.on('disconnect', () => {
   currentRoom = null;
+  stopAmbient();
   game?.destroy();
   game = null;
   show('lobby');
   $('lobby-error').textContent = 'Desconectado del servidor. Reconectando…';
 });
 socket.on('connect', () => { $('lobby-error').textContent = ''; });
+
+// ---- Sound toggle (button or M key) ----
+const muteBtn = $('mute-btn');
+const renderMute = () => {
+  muteBtn.textContent = isMuted() ? '🔇' : '🔊';
+  muteBtn.title = isMuted() ? 'Activar sonido (M)' : 'Silenciar (M)';
+};
+muteBtn.addEventListener('click', () => { setMuted(!isMuted()); renderMute(); });
+window.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 'm' || e.target.closest?.('input, textarea')) return;
+  setMuted(!isMuted());
+  renderMute();
+});
+renderMute();

@@ -2,6 +2,7 @@ import {
   AnimatedSprite, Application, BlurFilter, Container, Graphics, Rectangle, Sprite, Texture, TilingSprite,
 } from 'pixi.js';
 import { loadAssets } from './assets.js';
+import { play } from './audio.js';
 import {
   ENTITY_STATS, TILE_SIZE, Terrain, ResourceType, RESOURCE_NAMES, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
   MAX_POPULATION, GATHER_UPGRADES, SHEEP,
@@ -40,6 +41,8 @@ const RESOURCE_COLORS = {
 };
 const STONE_TINT = 0x9aa0a6;
 const HEAL_COLOR = 0x7dff7a;
+const WORK_SOUND_MS = 900; // a gathering/building villager makes a sound this often
+const HEAL_SOUND_MS = 1500;
 // Building texture per building type; width = footprint * widthFactor
 const BUILDING_ART = {
   townCenter: { texture: 'castle', widthFactor: 1.1 },
@@ -340,14 +343,20 @@ export class Game {
       if (!s) {
         s = this.createView(e);
         this.sprites.set(e.id, s);
+        // A new unit of ours after the first update was just trained
+        if (this.stateSeen && e.owner === this.myId && !isBuildingType(e.type)) this.sfx('trained', e.x, e.y);
+      } else if (e.hp < s.hp) {
+        this.sfx(isBuildingType(e.type) ? 'hit' : 'sword', e.x, e.y);
       }
       Object.assign(s, e);
     }
+    this.stateSeen = true;
     for (const [id, s] of this.sprites) {
       if (seen.has(id)) continue;
       // Buildings blow up, units leave a puff of dust
       if (isBuildingType(s.type)) this.spawnFx(s.id % 2 ? 'explosion1' : 'explosion2', s.x, s.y, buildingSize(s.type) / 120);
       else this.spawnFx('dust1', s.g.x, s.g.y, 0.7);
+      this.sfx(isBuildingType(s.type) ? 'collapse' : 'death', s.x, s.y);
       s.g.destroy({ children: true });
       s.fields?.destroy();
       this.sprites.delete(id);
@@ -562,7 +571,10 @@ export class Game {
     const maxHp = s.maxHp ?? stats.hp;
 
     // Puff of dust the moment construction finishes; flames while badly damaged
-    if (s.built && s.wasBuilt === false) this.spawnFx('dust2', s.x, s.y + half - 6, size / 70);
+    if (s.built && s.wasBuilt === false) {
+      this.spawnFx('dust2', s.x, s.y + half - 6, size / 70);
+      this.sfx('built', s.x, s.y);
+    }
     s.wasBuilt = s.built;
     const burning = s.built && !fallen && s.hp < maxHp * LOW_HP_FIRE;
     if (burning && !s.fire.visible) s.fire.play();
@@ -682,6 +694,32 @@ export class Game {
     if (s.action === 'building') drawBar(g, barY, 26, this.sprites.get(s.buildingId)?.buildProgress ?? 0, 0xf0a030);
     if (s.hp < stats.hp) drawBar(g, barY + 7, 24, s.hp / stats.hp, 0x4caf50);
     this.drawFlag(s);
+    this.unitSounds(s);
+  }
+
+  // Plays a world sound at (x, y): full volume at the centre of the screen, fading toward the edges,
+  // silent off screen
+  sfx(name, x, y) {
+    if (!this.world) return;
+    const p = this.world.toGlobal({ x, y });
+    const { width, height } = this.app.screen;
+    const margin = 80;
+    if (p.x < -margin || p.y < -margin || p.x > width + margin || p.y > height + margin) return;
+    const d = Math.hypot(p.x - width / 2, p.y - height / 2) / Math.hypot(width / 2, height / 2);
+    play(name, (1 - d * 0.7) * Math.min(1, this.world.scale.x));
+  }
+
+  // Chopping, mining, hammering and healing, repeated while the unit keeps at it
+  unitSounds(s) {
+    const now = performance.now();
+    let sound = null;
+    let every = WORK_SOUND_MS;
+    if (s.action === 'gathering') sound = { wood: 'chop', gold: 'mine', stone: 'mine' }[s.carry?.type] ?? null;
+    else if (s.action === 'building') sound = 'hammer';
+    else if (s.action === 'healing') { sound = 'heal'; every = HEAL_SOUND_MS; }
+    if (!sound || now - (s.lastSound ?? 0) < every) return;
+    s.lastSound = now + Math.random() * 200; // desynchronise neighbours
+    this.sfx(sound, s.g.x, s.g.y);
   }
 
   // The flag pole rises behind the bearer; the cloth is the player's drawing in their colour, waving
@@ -729,6 +767,7 @@ export class Game {
     for (const { x, y, targetId } of shots) {
       const target = this.sprites.get(targetId);
       if (!target) continue;
+      this.sfx('bow', x, y);
       this.arrows.push({ x, y, targetId, to: { x: target.g.x, y: target.g.y }, t: 0 });
     }
   }
@@ -750,7 +789,10 @@ export class Game {
       const arc = Math.sin(t * Math.PI) * 18;
       a.sprite.position.set(a.x + (a.to.x - a.x) * t, a.y + (a.to.y - a.y) * t - arc - 20);
       a.sprite.rotation = Math.atan2(a.to.y - a.y, a.to.x - a.x);
-      if (a.t >= 1) a.sprite.destroy();
+      if (a.t >= 1) {
+        a.sprite.destroy();
+        this.sfx('arrowHit', a.to.x, a.to.y);
+      }
     }
     this.arrows = this.arrows.filter((a) => a.t < 1);
   }
@@ -973,6 +1015,7 @@ export class Game {
   }
 
   showMessage(message, kind = 'error') {
+    play(kind === 'notice' ? 'notice' : 'error');
     const el = this.ui.message;
     el.textContent = message;
     el.classList.toggle('notice', kind === 'notice');
@@ -998,6 +1041,7 @@ export class Game {
     // Selected villagers go build it; the server picks the closest villager when none are selected
     const unitIds = this.selectedUnitIds().filter((id) => this.sprites.get(id).type === 'villager');
     this.socket.emit('game:build', { type: this.placing, tx, ty, unitIds });
+    play('place');
     if (!this.keys.has('shift')) this.placing = null;
     this.renderHud();
   }

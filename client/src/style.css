@@ -151,3 +151,8 @@ button:disabled { filter: grayscale(0.9) brightness(0.8); cursor: default; }
 @keyframes sword-left { from { transform: translate(-300px, 120px) rotate(-40deg); opacity: 0; } to { transform: rotate(-40deg); opacity: 1; } }
 @keyframes sword-right { from { transform: scaleX(-1) translate(-300px, 120px) rotate(-40deg); opacity: 0; } to { transform: scaleX(-1) rotate(-40deg); opacity: 1; } }
 @keyframes confetti-fall { to { transform: translateY(110vh) rotate(720deg); } }
+
+/* Sound toggle, always reachable */
+#mute-btn {
+  position: fixed; top: 8px; right: 8px; z-index: 30; padding: 4px 8px; font-size: 16px; line-height: 1; min-height: 0;
+}
