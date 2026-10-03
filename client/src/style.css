@@ -75,15 +75,18 @@ button:disabled { filter: grayscale(0.9) brightness(0.8); cursor: default; }
 }
 #message.notice { border-image-source: url('/assets/ui/ribbon_blue.png'); }
 #build-menu {
-  position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%); display: flex; gap: 6px; justify-content: center;
-  flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: calc(100vw - 60px); padding: 0 4px;
-  border-style: solid; border-width: 24px; border-image: url('/assets/ui/woodtable_9.png') 128 fill / 36px / 0 stretch;
+  position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%); display: flex; gap: 4px; justify-content: center;
+  flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: calc(100vw - 16px); padding: 0 2px;
+  border-style: solid; border-width: 16px; border-image: url('/assets/ui/woodtable_9.png') 128 fill / 24px / 0 stretch;
 }
-#build-menu button { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; flex-shrink: 0; }
+#build-menu button {
+  display: flex; flex-direction: row; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; flex-shrink: 0;
+  padding: 4px 7px; min-height: 0;
+}
 #build-menu button.active { filter: drop-shadow(0 0 6px #7dff7a); }
-#build-menu button img { height: 30px; width: 30px; object-fit: contain; }
+#build-menu button img { height: 20px; width: 20px; object-fit: contain; }
 #build-menu button .text { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
-#build-menu small { color: #dbe9f2; font-size: 11px; font-weight: 500; }
+#build-menu small { color: #dbe9f2; font-size: 9px; font-weight: 500; }
 
 /* ---- Epic end screen ---- */
 #game-over {
