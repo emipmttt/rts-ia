@@ -481,11 +481,20 @@ export class Game {
   // ---------- Hit testing ----------
 
   entityAt(x, y) {
-    // Units first, they are drawn on top of buildings
+    // Units first, they are drawn on top of buildings. The hit box covers the whole character sprite
+    // (it stands above its position); when several overlap, the one whose body is closest wins.
+    let best = null;
+    let bestDist = Infinity;
     for (const [id, s] of this.sprites) {
       if (isBuildingType(s.type)) continue;
-      if (Math.hypot(s.g.x - x, s.g.y - y) <= ENTITY_STATS[s.type].radius + 3) return id;
+      const r = ENTITY_STATS[s.type].radius;
+      const dx = x - s.g.x;
+      const dy = y - s.g.y;
+      if (Math.abs(dx) > r + 8 || dy < -(r + 26) || dy > r + 6) continue;
+      const d = Math.hypot(dx, dy + r * 0.8);
+      if (d < bestDist) { best = id; bestDist = d; }
     }
+    if (best != null) return best;
     for (const [id, s] of this.sprites) {
       if (!isBuildingType(s.type)) continue;
       const half = buildingSize(s.type) / 2;

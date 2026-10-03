@@ -50,11 +50,11 @@ function createPerlin(rng) {
 // Tuning
 const NOISE_SCALE = 0.07;
 const ROAD_WIDTH = 0.045; // |height| below this = sand road (the noise "valleys"); purely cosmetic
-const SPAWN_CLEAR_RADIUS = 5; // tiles kept free of trees around each town center
+const SPAWN_CLEAR_RADIUS = 7; // tiles kept free of trees around each town center (room to build)
 // Every base gets exactly the same resources around it, so starts are fair
 const BASE_TREES = 64;
 const BASE_FOREST_ANGLE = 1.25; // radians // two forests, this far to either side of the direction to the map centre
-const BASE_FOREST_DISTANCE = 7; // tiles from the town center to each forest's middle
+const BASE_FOREST_DISTANCE = 9.5; // tiles from the town center to each forest's middle
 const BASE_GOLD_MINES = 2;
 const BASE_STONE_MINES = 1;
 const BASE_SHEEP = 8;
@@ -65,7 +65,7 @@ const GOLD_MINES_PER_1000 = 4;
 const STONE_MINES_PER_1000 = 3;
 const SHEEP_PER_1000 = 7;
 const BUSHES_PER_1000 = 10;
-const NEUTRAL_MIN_DISTANCE = 10; // neutral resources stay this far from bases and the centre
+const NEUTRAL_MIN_DISTANCE = 13; // neutral resources stay this far from bases and the centre
 // Rivers: one running across the map and one running down it, between the bases and the centre,
 // crossable only over their bridges
 const RIVER_WIDTH = 2;
@@ -221,8 +221,8 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
     // Mines in front of the base, between the two forests (behind and beside a corner base is the map
     // edge), each nudged until it lands on free ground: gold left and right, stone further ahead
     const mines = [
-      [ResourceType.GOLD, toCenter - 0.5, 6], [ResourceType.GOLD, toCenter + 0.5, 6],
-      [ResourceType.STONE, toCenter, 9],
+      [ResourceType.GOLD, toCenter - 0.5, 7.5], [ResourceType.GOLD, toCenter + 0.5, 7.5],
+      [ResourceType.STONE, toCenter, 10],
     ].slice(0, BASE_GOLD_MINES + BASE_STONE_MINES);
     for (const [type, angle, distance] of mines) {
       for (let tries = 0; tries < 80; tries++) {
