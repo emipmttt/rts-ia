@@ -778,7 +778,7 @@ export class Game {
       if (stats.farm && s.built) {
         lines.push(`Siembra: ${s.food}/${stats.farm.food} comida`);
         if (mine && s.food > 0) lines.push('Clic derecho con aldeanos para cultivar');
-        if (mine && s.food <= 0) lines.push(`¡Cosecha agotada! Clic para resembrar: ${formatCost(stats.farm.reseedCost)}`);
+        if (mine && s.food <= 0) lines.push(`¡Cosecha agotada! Se resiembra sola cuando hay madera, o clic para resembrar: ${formatCost(stats.farm.reseedCost)}`);
       }
       if (!s.built) {
         lines.push(`En construcción: ${Math.floor(s.buildProgress * 100)}%`);

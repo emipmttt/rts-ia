@@ -294,9 +294,17 @@ export class GameRoom {
     const stats = farm && ENTITY_STATS[farm.type].farm;
     if (!player || !stats || farm.owner !== playerId || !farm.built || this.status !== RoomStatus.PLAYING) return;
     if (farm.food > 0) return this.error(playerId, 'La siembra aún no se ha acabado');
-    if (!canAfford(player.stock, stats.reseedCost)) return this.error(playerId, 'Recursos insuficientes');
+    if (!this.reseed(farm)) this.error(playerId, 'Recursos insuficientes');
+  }
+
+  // Replants a harvested farm if its owner can pay for it; returns whether it was replanted
+  reseed(farm) {
+    const player = this.players.get(farm.owner);
+    const stats = ENTITY_STATS[farm.type].farm;
+    if (!player || !canAfford(player.stock, stats.reseedCost)) return false;
     for (const [k, v] of Object.entries(stats.reseedCost)) player.stock[k] -= v;
     farm.food = stats.food;
+    return true;
   }
 
   // Attack an enemy entity. Villagers ordered onto a fallen central town center capture it instead.
@@ -544,12 +552,13 @@ export class GameRoom {
     u.carry.amount = 0;
   }
 
-  // Farmers harvest the crop fields around the farm; when the crops run out they drop off what
-  // they carry and wait at the farm until it is reseeded
+  // Farmers harvest the crop fields around the farm. When the crops run out the farm replants itself
+  // if its owner has the wood; otherwise farmers drop off what they carry and wait until it is reseeded
   updateFarmer(u) {
     const farm = this.entities.get(u.task.buildingId);
     const { carry } = u;
     const stats = ENTITY_STATS[u.type];
+    if (farm && farm.owner === u.owner && farm.food <= 0) this.reseed(farm);
     if (!farm || farm.owner !== u.owner) {
       if (carry.amount > 0 && carry.type === 'food') this.deliverCarry(u);
       else u.task = null;
