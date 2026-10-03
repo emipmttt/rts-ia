@@ -583,6 +583,7 @@ export class GameRoom {
 
     // Full, or nothing left to gather: carry it back to the closest finished town center
     if (carry.amount >= stats.carryCapacity || (!resource && carry.amount > 0)) {
+      task.trackedId = null; // the walk back to the resource is tracked from scratch
       this.deliverCarry(u);
       return;
     }
