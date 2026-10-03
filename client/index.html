@@ -1,33 +1,33 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RTS Multiplayer</title>
+    <title>Tiny Swords RTS</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <!-- Lobby: list and create rooms -->
-    <section id="lobby" class="screen">
-      <h1>RTS Multiplayer</h1>
-      <label>Your name <input id="player-name" maxlength="20" /></label>
+    <section id="lobby" class="screen panel-paper">
+      <h1 class="ribbon-title">Tiny Swords RTS</h1>
+      <label>Tu nombre <input id="player-name" maxlength="20" /></label>
       <form id="create-form" class="row">
-        <input id="room-name" maxlength="30" placeholder="Room name" />
-        <button type="submit">Create room</button>
+        <input id="room-name" maxlength="30" placeholder="Nombre de la sala" />
+        <button type="submit">Crear sala</button>
       </form>
-      <h2>Rooms</h2>
+      <h2>Salas</h2>
       <ul id="room-list"></ul>
       <p id="lobby-error" class="error"></p>
     </section>
 
     <!-- Room: waiting for host to start -->
-    <section id="room" class="screen hidden">
+    <section id="room" class="screen panel-paper hidden">
       <h1 id="room-title"></h1>
       <p id="room-info"></p>
       <ul id="player-list"></ul>
       <div class="row">
-        <button id="start-btn" class="hidden">Start game</button>
-        <button id="leave-btn">Leave room</button>
+        <button id="start-btn" class="hidden">Iniciar partida</button>
+        <button id="leave-btn" class="red">Salir de la sala</button>
       </div>
       <p id="room-error" class="error"></p>
     </section>
@@ -39,12 +39,22 @@
       <nav id="build-menu"></nav>
       <div id="tooltip" class="hidden"></div>
       <div id="game-over" class="hidden">
-        <div class="panel">
-          <h1 id="game-over-title"></h1>
-          <p id="game-over-text"></p>
-          <div class="row">
-            <button id="spectate-btn">Keep watching</button>
-            <button id="back-btn">Back to lobby</button>
+        <div class="rays"></div>
+        <div id="confetti"></div>
+        <div class="end-content">
+          <div class="crest">
+            <img id="sword-left" class="sword left" alt="" />
+            <img id="sword-right" class="sword right" alt="" />
+          </div>
+          <div id="end-ribbon" class="end-ribbon"><h1 id="game-over-title"></h1></div>
+          <div class="end-panel">
+            <p id="game-over-text"></p>
+            <p id="game-over-time" class="muted"></p>
+            <table id="end-stats"></table>
+            <div class="row">
+              <button id="spectate-btn">Seguir mirando</button>
+              <button id="back-btn" class="red">Volver al lobby</button>
+            </div>
           </div>
         </div>
       </div>

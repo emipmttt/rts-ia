@@ -1,12 +1,14 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { PORT } from '../shared/constants.js';
 import { Lobby } from './Lobby.js';
 
 const app = express();
-app.use(express.static('dist'));
+// Built client (npm run build); resolved from this file so the server can be started from any directory
+app.use(express.static(fileURLToPath(new URL('../dist', import.meta.url))));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 const httpServer = createServer(app);

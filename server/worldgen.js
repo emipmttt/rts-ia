@@ -1,5 +1,5 @@
 import {
-  MAP_TILES, TILE_SIZE, Terrain, ResourceType, RESOURCE_STATS,
+  MAP_TILES, TILE_SIZE, Terrain, ResourceType, RESOURCE_STATS, BUSH_WOOD,
 } from '../shared/constants.js';
 
 // Deterministic PRNG so a seed always produces the same map
@@ -55,6 +55,14 @@ const TREE_HEIGHT = 0.28; // height above this = forest
 const SPAWN_CLEAR_RADIUS = 5; // tiles kept free of trees around each town center
 const RANDOM_GOLD_MINES = 6;
 const GOLD_MIN_DISTANCE_FROM_SPAWN = 9;
+// Every base gets two guaranteed tree strips, whatever the noise did around it
+const STRIP_ANGLE = Math.PI / 3; // each strip sits this far to either side of the direction to the map centre
+const STRIP_START = 6; // tiles from the town center
+const STRIP_LENGTH = 6;
+const STRIP_WIDTH = 2;
+const BASE_SHEEP = 4;
+const RANDOM_SHEEP = 10;
+const BUSHES = 40;
 
 /**
  * Generates the terrain grid and the resource tiles.
@@ -80,15 +88,18 @@ export function generateWorld(seed, spawnPoints, clearPoints = []) {
   const distToClear = (tx, ty) => Math.min(...clearTiles.map((s) => Math.hypot(s.tx - tx, s.ty - ty)));
 
   let nextId = 1;
-  const addResource = (type, tx, ty) => {
+  const addResource = (type, tx, ty, variant = null) => {
+    const amount = variant === 'bush' ? BUSH_WOOD : RESOURCE_STATS[type].amount;
     const r = {
       id: nextId++,
       type,
+      variant,
       tx,
       ty,
       x: (tx + 0.5) * TILE_SIZE,
       y: (ty + 0.5) * TILE_SIZE,
-      amount: RESOURCE_STATS[type].amount,
+      amount,
+      max: amount,
     };
     resourceAt.set(`${tx},${ty}`, r);
   };
@@ -122,6 +133,34 @@ export function generateWorld(seed, spawnPoints, clearPoints = []) {
     placeGoldMine(Math.round(s.tx + Math.cos(angle) * 7), Math.round(s.ty + Math.sin(angle) * 7));
   }
 
+  const inMap = (tx, ty) => tx >= 0 && ty >= 0 && tx < MAP_TILES && ty < MAP_TILES;
+  const isFree = (tx, ty) => inMap(tx, ty) && !resourceAt.has(`${tx},${ty}`);
+
+  // Two radial strips of trees per base, mirrored around the direction to the map centre
+  for (const s of spawnTiles) {
+    const toCenter = Math.atan2(center - s.ty, center - s.tx);
+    for (const side of [-1, 1]) {
+      const a = toCenter + side * STRIP_ANGLE;
+      const dir = { x: Math.cos(a), y: Math.sin(a) };
+      for (let d = STRIP_START; d < STRIP_START + STRIP_LENGTH; d++) {
+        for (let w = 0; w < STRIP_WIDTH; w++) {
+          const tx = Math.round(s.tx + dir.x * d - dir.y * w * side);
+          const ty = Math.round(s.ty + dir.y * d + dir.x * w * side);
+          if (!isFree(tx, ty)) continue;
+          tiles[ty * MAP_TILES + tx] = Terrain.GRASS;
+          addResource(ResourceType.WOOD, tx, ty);
+        }
+      }
+    }
+    // Sheep behind the town center, away from the map centre
+    for (let i = 0; i < BASE_SHEEP; i++) {
+      const a = toCenter + Math.PI + (i - (BASE_SHEEP - 1) / 2) * 0.45;
+      const tx = Math.round(s.tx + Math.cos(a) * 4);
+      const ty = Math.round(s.ty + Math.sin(a) * 4);
+      if (isFree(tx, ty)) addResource(ResourceType.FOOD, tx, ty);
+    }
+  }
+
   // Random mines elsewhere, away from bases
   for (let placed = 0, tries = 0; placed < RANDOM_GOLD_MINES && tries < 500; tries++) {
     const tx = Math.floor(rng() * MAP_TILES);
@@ -129,6 +168,19 @@ export function generateWorld(seed, spawnPoints, clearPoints = []) {
     if (distToClear(tx, ty) < GOLD_MIN_DISTANCE_FROM_SPAWN) continue;
     if (placeGoldMine(tx, ty)) placed++;
   }
+
+  // Wandering sheep and decorative (but choppable) bushes on open grass
+  const scatter = (count, minDistance, place) => {
+    for (let placed = 0, tries = 0; placed < count && tries < 2000; tries++) {
+      const tx = Math.floor(rng() * MAP_TILES);
+      const ty = Math.floor(rng() * MAP_TILES);
+      if (!isFree(tx, ty) || tiles[ty * MAP_TILES + tx] !== Terrain.GRASS || distToClear(tx, ty) < minDistance) continue;
+      place(tx, ty);
+      placed++;
+    }
+  };
+  scatter(RANDOM_SHEEP, GOLD_MIN_DISTANCE_FROM_SPAWN, (tx, ty) => addResource(ResourceType.FOOD, tx, ty));
+  scatter(BUSHES, SPAWN_CLEAR_RADIUS - 1, (tx, ty) => addResource(ResourceType.WOOD, tx, ty, 'bush'));
 
   return { seed, tiles, resources: [...resourceAt.values()] };
 }

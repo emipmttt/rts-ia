@@ -15,7 +15,7 @@ const show = (screen) => {
 // Remember the player's name between visits
 const nameInput = $('player-name');
 try { nameInput.value = localStorage.getItem('playerName') ?? ''; } catch { /* storage unavailable */ }
-if (!nameInput.value) nameInput.value = `Player${Math.floor(Math.random() * 1000)}`;
+if (!nameInput.value) nameInput.value = `Jugador${Math.floor(Math.random() * 1000)}`;
 nameInput.addEventListener('change', () => {
   try { localStorage.setItem('playerName', nameInput.value); } catch { /* storage unavailable */ }
 });
@@ -34,17 +34,17 @@ socket.on('lobby:rooms', (rooms) => {
   if (!rooms.length) {
     const li = document.createElement('li');
     li.className = 'muted';
-    li.textContent = 'No rooms yet — create one!';
+    li.textContent = 'Aún no hay salas — ¡crea una!';
     list.append(li);
     return;
   }
   for (const room of rooms) {
     const li = document.createElement('li');
     const label = document.createElement('span');
-    const status = { playing: '(in game)', finished: '(finished)' }[room.status] ?? '';
+    const status = { playing: '(en partida)', finished: '(terminada)' }[room.status] ?? '';
     label.textContent = `${room.name} — ${room.players}/${room.max} ${status}`;
     const btn = document.createElement('button');
-    btn.textContent = 'Join';
+    btn.textContent = 'Unirse';
     btn.disabled = room.status !== 'waiting' || room.players >= room.max;
     btn.addEventListener('click', () => socket.emit('room:join', { roomId: room.id, playerName: playerName() }));
     li.append(label, btn);
@@ -63,8 +63,8 @@ socket.on('room:update', (room) => {
   $('room-title').textContent = room.name;
   const isHost = room.hostId === socket.id;
   $('room-info').textContent = isHost
-    ? 'You are the host. Start the game when everyone is in.'
-    : 'Waiting for the host to start the game…';
+    ? 'Eres el anfitrión. Inicia la partida cuando estén todos.'
+    : 'Esperando a que el anfitrión inicie la partida…';
 
   const list = $('player-list');
   list.replaceChildren();
@@ -74,10 +74,10 @@ socket.on('room:update', (room) => {
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = hex(p.color);
-    name.append(swatch, `${p.name}${p.id === socket.id ? ' (you)' : ''}`);
+    name.append(swatch, `${p.name}${p.id === socket.id ? ' (tú)' : ''}`);
     const tag = document.createElement('span');
     tag.className = 'muted';
-    tag.textContent = p.id === room.hostId ? 'host' : '';
+    tag.textContent = p.id === room.hostId ? 'anfitrión' : '';
     li.append(name, tag);
     list.append(li);
   }
@@ -112,17 +112,83 @@ socket.on('game:shots', (shots) => game?.addShots(shots));
 socket.on('game:error', ({ message }) => game?.showMessage(message));
 socket.on('game:notice', ({ message }) => game?.showMessage(message, 'notice'));
 
-const showEndScreen = (title, text, canSpectate) => {
+const formatDuration = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+
+// Gold and faction-coloured confetti raining down on a win
+function launchConfetti(colors) {
+  const box = $('confetti');
+  box.replaceChildren(...Array.from({ length: 120 }, () => {
+    const piece = document.createElement('i');
+    piece.style.left = `${Math.random() * 100}%`;
+    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.animationDuration = `${2.5 + Math.random() * 3}s`;
+    piece.style.animationDelay = `${Math.random() * 2}s`;
+    piece.style.transform = `rotate(${Math.random() * 360}deg)`;
+    return piece;
+  }));
+}
+
+function renderStats(players, winnerId) {
+  const table = $('end-stats');
+  table.replaceChildren();
+  if (!players?.length) return;
+  const head = document.createElement('tr');
+  for (const h of ['Jugador', 'Entrenadas', 'Bajas', 'Perdidas', 'Recolectado']) {
+    const th = document.createElement('th');
+    th.textContent = h;
+    head.append(th);
+  }
+  table.append(head);
+  for (const p of players) {
+    const tr = document.createElement('tr');
+    tr.classList.toggle('winner', p.id === winnerId);
+    const name = document.createElement('td');
+    const swatch = document.createElement('span');
+    swatch.className = 'swatch';
+    swatch.style.background = hex(p.color);
+    name.append(swatch, `${p.id === winnerId ? '👑 ' : ''}${p.name}`);
+    tr.append(name, ...[p.stats.trained, p.stats.kills, p.stats.lost, p.stats.gathered].map((v) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      return td;
+    }));
+    table.append(tr);
+  }
+}
+
+const showEndScreen = ({
+  title, text, won, faction, canSpectate, duration, players, winnerId,
+}) => {
+  const overlay = $('game-over');
+  // Restart the CSS entrance animations
+  overlay.classList.add('hidden');
+  void overlay.offsetWidth;
+  overlay.classList.toggle('lost', !won);
+  const color = faction ?? (won ? 'yellow' : 'black');
+  $('end-ribbon').style.borderImageSource = `url('/assets/ui/ribbon_${won ? 'yellow' : color}.png')`;
+  $('sword-left').src = `/assets/ui/sword_${color}.png`;
+  $('sword-right').src = `/assets/ui/sword_${color}.png`;
   $('game-over-title').textContent = title;
   $('game-over-text').textContent = text;
+  $('game-over-time').textContent = duration ? `Duración de la partida: ${formatDuration(duration)}` : '';
+  renderStats(players, winnerId);
+  if (won) launchConfetti(['#ffd34d', '#fff3c4', '#f0a030', '#3b82f6', '#e74c3c', '#ffffff']);
+  else $('confetti').replaceChildren();
   $('spectate-btn').classList.toggle('hidden', !canSpectate);
-  $('game-over').classList.remove('hidden');
+  overlay.classList.remove('hidden');
 };
-socket.on('game:defeated', () => showEndScreen('Defeated', 'All your Town Centers were destroyed.', true));
-socket.on('game:over', ({ winnerId, winnerName, reason }) => {
+socket.on('game:defeated', () => showEndScreen({
+  title: 'DERROTA', text: 'Todos tus Centros urbanos fueron destruidos.', won: false, canSpectate: true,
+}));
+socket.on('game:over', ({
+  winnerId, winnerName, winnerFaction, reason, duration, players,
+}) => {
   const won = winnerId === socket.id;
-  const text = winnerName ? `${won ? 'You' : winnerName} ${reason}.` : `No winner: ${reason}.`;
-  showEndScreen(won ? 'Victory!' : 'Game over', text, false);
+  const text = winnerName ? `¡${won ? 'Tu reino' : winnerName} ${reason}!` : `Sin ganador: ${reason}.`;
+  showEndScreen({
+    title: won ? '¡VICTORIA!' : (winnerName ? 'FIN DE LA PARTIDA' : 'EMPATE'),
+    text, won, faction: winnerFaction, canSpectate: false, duration, players, winnerId,
+  });
 });
 $('spectate-btn').addEventListener('click', () => $('game-over').classList.add('hidden'));
 $('back-btn').addEventListener('click', () => socket.emit('room:leave'));
@@ -132,6 +198,6 @@ socket.on('disconnect', () => {
   game?.destroy();
   game = null;
   show('lobby');
-  $('lobby-error').textContent = 'Disconnected from server. Reconnecting…';
+  $('lobby-error').textContent = 'Desconectado del servidor. Reconectando…';
 });
 socket.on('connect', () => { $('lobby-error').textContent = ''; });

@@ -1,15 +1,19 @@
 import {
-  AnimatedSprite, Application, Container, Graphics, Sprite, TilingSprite,
+  AnimatedSprite, Application, BlurFilter, Container, Graphics, Sprite, TilingSprite,
 } from 'pixi.js';
 import { loadAssets } from './assets.js';
 import {
-  ENTITY_STATS, MAP_TILES, TILE_SIZE, Terrain, ResourceType, RESOURCE_STATS, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
+  ENTITY_STATS, MAP_TILES, TILE_SIZE, Terrain, ResourceType, RESOURCE_NAMES, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
+  MAX_POPULATION,
 } from '../../shared/constants.js';
 import {
   isBuildingType, buildingSize, tileForCenter, footprint, canPlace, canAfford, formatCost,
 } from '../../shared/rules.js';
 
 const SAND_COLOR = 0xd8c08a;
+const SAND_LIGHT = 0xe6d3a3;
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 1.8;
 const NEUTRAL_FACTION = 'black'; // castle art used for the unclaimed central town center
 
 // Sprite sheet prefix and scale per unit type (frames are 192px, lancer 320px)
@@ -26,8 +30,15 @@ const BUILDING_ART = {
   archeryRange: { texture: 'archery', widthFactor: 1.15 },
   stable: { texture: 'monastery', widthFactor: 1.15 },
   tower: { texture: 'tower', widthFactor: 1.5 },
+  house: { texture: 'house1', variants: ['house1', 'house2', 'house3'], widthFactor: 1.3 },
 };
-const ANIM_SPEED = { idle: 0.12, run: 0.2, work: 0.15, attack: 0.2 };
+// Seconds per full animation cycle, so long and short sheets play at a natural pace.
+// Attacks use the unit's own cooldown so each swing matches a hit.
+const ANIM_CYCLE = { idle: 1.2, run: 0.75, work: 0.9 };
+const ANIM_GROUP = {
+  idle: 'idle', run: 'run', run_wood: 'run', run_gold: 'run', run_meat: 'run', attack: 'attack', shoot: 'attack',
+};
+const LOW_HP_FIRE = 0.5; // buildings below this fraction of hp burn
 const HOVER_COLOR = 0xffffff;
 const SELECT_COLOR = 0x00ff00;
 const CLICK_THRESHOLD = 5; // px of pointer movement before a click becomes a drag-select
@@ -53,7 +64,8 @@ export class Game {
     this.selected = new Set();
     this.resources = new Map(); // resourceId -> { g, type, tx, ty, amount }
     this.resourceAt = new Map(); // "tx,ty" -> resourceId
-    this.stock = { wood: 0, gold: 0 };
+    this.stock = { food: 0, wood: 0, gold: 0 };
+    this.pop = { used: 0, cap: 0 };
     this.keys = new Set();
     this.pointer = { x: 0, y: 0 }; // screen space
     this.dragStart = null;
@@ -81,12 +93,13 @@ export class Game {
     this.objects = new Container({ sortableChildren: true });
     this.effects = new Graphics(); // tower range circles
     this.arrowLayer = new Container();
+    this.fxLayer = new Container(); // one-shot particles (dust, explosions)
     this.overlay = new Graphics(); // hover outline + building ghost
     this.ghost = new Sprite();
     this.ghost.anchor.set(0.5, 1);
     this.ghost.alpha = 0.6;
     this.ghost.visible = false;
-    this.world.addChild(this.objects, this.effects, this.arrowLayer, this.overlay, this.ghost);
+    this.world.addChild(this.objects, this.effects, this.fxLayer, this.arrowLayer, this.overlay, this.ghost);
     for (const r of resources) this.addResource(r);
     this.selectionBox = new Graphics();
     this.app.stage.addChild(this.selectionBox);
@@ -99,30 +112,61 @@ export class Game {
 
   // ---------- World ----------
 
+  // Sand is drawn as overlapping blobs and blurred once, so it fades into the grass instead of hard tile edges
   drawGround(map) {
     const ground = new Container();
     const grass = new TilingSprite({ texture: this.assets.grass, width: map.width, height: map.height });
     grass.tileScale.set(TILE_SIZE / 64);
-    const sand = new Graphics();
+
+    const sand = new Container();
+    const base = new Graphics();
+    const light = new Graphics();
+    const isSand = (tx, ty) => map.tiles[ty * MAP_TILES + tx] === Terrain.SAND;
     for (let ty = 0; ty < MAP_TILES; ty++) {
       for (let tx = 0; tx < MAP_TILES; tx++) {
-        if (map.tiles[ty * MAP_TILES + tx] === Terrain.SAND) sand.rect(tx * TILE_SIZE, ty * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        if (!isSand(tx, ty)) continue;
+        const cx = (tx + 0.5) * TILE_SIZE;
+        const cy = (ty + 0.5) * TILE_SIZE;
+        base.circle(cx, cy, TILE_SIZE * 0.85);
+        // Lighter core on tiles surrounded by sand gives the paths some depth
+        const inner = [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => isSand(tx + dx, ty + dy));
+        if (inner) light.circle(cx + ((tx * 7) % 5) - 2, cy + ((ty * 11) % 5) - 2, TILE_SIZE * 0.55);
       }
     }
-    sand.fill(SAND_COLOR);
+    base.fill(SAND_COLOR);
+    light.fill({ color: SAND_LIGHT, alpha: 0.7 });
+    sand.addChild(base, light);
+    sand.filters = [new BlurFilter({ strength: 10, quality: 4 })];
+    sand.cacheAsTexture({ resolution: 1 }); // a 2x cache of the whole map would exceed the max GPU texture size
+    // Blur spills past the map edge; clip it to the map
+    const sandMask = new Graphics().rect(0, 0, map.width, map.height).fill(0xffffff);
+    sand.mask = sandMask;
+    ground.addChild(sandMask);
+
     const border = new Graphics().rect(0, 0, map.width, map.height).stroke({ width: 4, color: 0x222222 });
     ground.addChild(grass, sand, border);
     return ground;
   }
 
-  // Trees sway (animated sheet), gold uses one of the stone variants; both are anchored at the tile's bottom
+  // Trees and bushes sway, sheep graze, gold uses one of the stone variants; all anchored at the tile's bottom
   addResource(r) {
     let g;
-    if (r.type === ResourceType.WOOD) {
-      const frames = this.assets.trees[r.id % this.assets.trees.length];
-      g = new AnimatedSprite(frames);
-      g.animationSpeed = 0.1;
-      g.gotoAndPlay(Math.floor(Math.random() * frames.length));
+    const animated = (frames, speed) => {
+      const sprite = new AnimatedSprite(frames);
+      sprite.animationSpeed = speed;
+      sprite.gotoAndPlay(Math.floor(Math.random() * frames.length));
+      return sprite;
+    };
+    if (r.type === ResourceType.FOOD) {
+      g = animated(r.id % 2 ? this.assets.sheep.grass : this.assets.sheep.idle, 0.1);
+      g.anchor.set(0.5, 0.8);
+      g.scale.set(0.42 * (r.id % 3 ? 1 : -1), 0.42);
+    } else if (r.variant === 'bush') {
+      g = animated(this.assets.bushes[r.id % this.assets.bushes.length], 0.08);
+      g.anchor.set(0.5, 0.8);
+      g.scale.set(0.38);
+    } else if (r.type === ResourceType.WOOD) {
+      g = animated(this.assets.trees[r.id % this.assets.trees.length], 0.1);
       g.anchor.set(0.5, 0.92);
       g.scale.set(0.3);
     } else {
@@ -143,6 +187,7 @@ export class Game {
       if (!r) continue;
       r.amount = amount;
       if (amount > 0) continue;
+      this.spawnFx(r.type === ResourceType.WOOD ? 'dust2' : 'dust1', r.g.x, r.g.y - 10, 0.6);
       r.g.destroy();
       this.resources.delete(id);
       this.resourceAt.delete(tileKey(r.tx, r.ty));
@@ -153,7 +198,10 @@ export class Game {
     if (!this.objects) return;
     this.players = new Map(players.map((p) => [p.id, p]));
     const me = this.players.get(this.socket.id);
-    if (me) this.stock = me.stock;
+    if (me) {
+      this.stock = me.stock;
+      this.pop = { used: me.pop, cap: me.popCap };
+    }
 
     const seen = new Set();
     for (const e of entities) {
@@ -166,7 +214,13 @@ export class Game {
       Object.assign(s, e);
     }
     for (const [id, s] of this.sprites) {
-      if (!seen.has(id)) { s.g.destroy(); this.sprites.delete(id); this.selected.delete(id); }
+      if (seen.has(id)) continue;
+      // Buildings blow up, units leave a puff of dust
+      if (isBuildingType(s.type)) this.spawnFx(s.id % 2 ? 'explosion1' : 'explosion2', s.x, s.y, buildingSize(s.type) / 120);
+      else this.spawnFx('dust1', s.g.x, s.g.y, 0.7);
+      s.g.destroy({ children: true });
+      this.sprites.delete(id);
+      this.selected.delete(id);
     }
     if (!this.focused) this.focusOnBase();
     this.renderHud();
@@ -179,17 +233,26 @@ export class Game {
     const under = new Graphics();
     const over = new Graphics();
     let sprite;
+    let fire = null;
     if (isBuildingType(e.type)) {
       sprite = new Sprite();
       sprite.anchor.set(0.5, 1);
+      fire = new AnimatedSprite(this.assets.fx[`fire${(e.id % 3) + 1}`]);
+      fire.anchor.set(0.5, 1);
+      fire.animationSpeed = 0.2;
+      fire.visible = false;
     } else {
       sprite = new AnimatedSprite(this.unitFrames(e.type, e.owner, 'idle'));
       sprite.anchor.set(0.5, 0.55);
       sprite.play();
     }
-    g.addChild(under, sprite, over);
+    g.addChild(under, sprite);
+    if (fire) g.addChild(fire);
+    g.addChild(over);
     this.objects.addChild(g);
-    return { g, under, over, sprite, anim: 'idle', facing: 1 };
+    return {
+      g, under, over, sprite, fire, anim: 'idle', facing: 1,
+    };
   }
 
   factionOf(owner) { return this.players.get(owner)?.faction ?? NEUTRAL_FACTION; }
@@ -201,11 +264,11 @@ export class Game {
   // Picks the sheet that matches what the unit is doing this tick
   unitAnim(s) {
     if (s.type === 'villager') {
-      if (s.action === 'gathering') return s.carry?.type === ResourceType.GOLD ? 'pickaxe' : 'axe';
+      if (s.action === 'gathering') return { gold: 'pickaxe', food: 'knife' }[s.carry?.type] ?? 'axe';
       if (s.action === 'building') return 'hammer';
       if (s.action === 'attacking') return 'axe';
       if (s.action === 'moving') {
-        if (s.carry?.amount > 0) return s.carry.type === ResourceType.GOLD ? 'run_gold' : 'run_wood';
+        if (s.carry?.amount > 0) return `run_${{ gold: 'gold', food: 'meat' }[s.carry.type] ?? 'wood'}`;
         return 'run';
       }
       return 'idle';
@@ -218,8 +281,43 @@ export class Game {
   focusOnBase() {
     const tc = [...this.sprites.values()].find((s) => s.owner === this.socket.id && s.type === 'townCenter');
     if (!tc) return;
-    this.world.position.set(this.app.screen.width / 2 - tc.x, this.app.screen.height / 2 - tc.y);
+    const k = this.world.scale.x;
+    this.world.position.set(this.app.screen.width / 2 - tc.x * k, this.app.screen.height / 2 - tc.y * k);
     this.focused = true;
+  }
+
+  // Zoom around a screen point, within ZOOM_MIN..ZOOM_MAX
+  zoomAt(screenPoint, factor) {
+    const before = this.world.toLocal(screenPoint);
+    const scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this.world.scale.x * factor));
+    this.world.scale.set(scale);
+    this.world.position.set(screenPoint.x - before.x * scale, screenPoint.y - before.y * scale);
+    this.clampCamera();
+  }
+
+  // Keep the map on screen (a little slack lets the edges clear the HUD and build menu)
+  clampCamera() {
+    const k = this.world.scale.x;
+    const slack = 160;
+    const { width, height } = this.app.screen;
+    const mapSize = MAP_TILES * TILE_SIZE * k;
+    const clampAxis = (pos, view) => Math.max(Math.min(pos, slack), view - mapSize - slack);
+    this.world.x = clampAxis(this.world.x, width);
+    this.world.y = clampAxis(this.world.y, height);
+  }
+
+  // One-shot particle animation at a world position
+  spawnFx(name, x, y, scale = 1) {
+    if (!this.fxLayer || this.destroyed) return;
+    const fx = new AnimatedSprite(this.assets.fx[name]);
+    fx.anchor.set(0.5, 0.7);
+    fx.position.set(x, y);
+    fx.scale.set(scale);
+    fx.loop = false;
+    fx.animationSpeed = 0.3;
+    fx.onComplete = () => fx.destroy();
+    this.fxLayer.addChild(fx);
+    fx.play();
   }
 
   // Tiles taken by resources or buildings, as known by the client
@@ -276,6 +374,7 @@ export class Game {
     if (k.has('d') || k.has('arrowright')) this.world.x -= speed;
     if (k.has('w') || k.has('arrowup')) this.world.y += speed;
     if (k.has('s') || k.has('arrowdown')) this.world.y -= speed;
+    this.clampCamera();
 
     // Interpolate toward server positions and redraw
     this.effects.clear();
@@ -308,7 +407,8 @@ export class Game {
 
     // Owner's faction art; the central town center uses neutral art until claimed
     const art = BUILDING_ART[s.type];
-    const texture = this.assets.buildings[this.factionOf(s.owner)][art.texture];
+    const textureName = art.variants ? art.variants[s.id % art.variants.length] : art.texture;
+    const texture = this.assets.buildings[this.factionOf(s.owner)][textureName];
     if (s.sprite.texture !== texture) {
       s.sprite.texture = texture;
       s.sprite.scale.set((size * art.widthFactor) / texture.width);
@@ -316,6 +416,18 @@ export class Game {
     s.sprite.y = half + 4;
     s.sprite.alpha = s.built ? 1 : 0.35 + 0.5 * s.buildProgress;
     s.sprite.tint = fallen ? 0x555555 : (s.central && !s.owner ? 0xbbbbbb : 0xffffff);
+
+    // Puff of dust the moment construction finishes; flames while badly damaged
+    if (s.built && s.wasBuilt === false) this.spawnFx('dust2', s.x, s.y + half - 6, size / 70);
+    s.wasBuilt = s.built;
+    const burning = s.built && !fallen && s.hp < stats.hp * LOW_HP_FIRE;
+    if (burning && !s.fire.visible) s.fire.play();
+    else if (!burning) s.fire.stop();
+    s.fire.visible = burning;
+    if (burning) {
+      s.fire.scale.set(size / 70);
+      s.fire.position.set(((s.id * 13) % 11) - 5, half - size * 0.45);
+    }
 
     const under = s.under.clear();
     if (isSelected) under.ellipse(0, half - 4, half + 8, half / 2.5).stroke({ width: 2, color: SELECT_COLOR });
@@ -334,7 +446,7 @@ export class Game {
       drawBar(g, half + 8, size, s.trainProgress, 0x4fc3f7);
       s.queue.forEach((_, i) => g.circle(-half + 5 + i * 9, half + 19, 3).fill(0x4fc3f7));
     }
-    if (s.type === 'tower' && s.built && (isSelected || this.hovered?.id === s.id)) {
+    if (stats.attack && s.built && (isSelected || this.hovered?.id === s.id)) {
       this.effects.circle(s.x, s.y, stats.attack.range).stroke({ width: 1, color, alpha: 0.6 });
     }
     if (s.hp < stats.hp && s.built && !fallen) drawBar(g, top - 2, size, s.hp / stats.hp, 0x4caf50);
@@ -349,9 +461,17 @@ export class Game {
     const anim = this.unitAnim(s);
     if (anim !== s.anim) {
       s.anim = anim;
-      s.sprite.textures = this.unitFrames(s.type, s.owner, anim);
-      s.sprite.animationSpeed = ANIM_SPEED[{ idle: 'idle', run: 'run', run_wood: 'run', run_gold: 'run', attack: 'attack', shoot: 'attack' }[anim] ?? 'work'];
+      const frames = this.unitFrames(s.type, s.owner, anim);
+      s.sprite.textures = frames;
+      const group = ANIM_GROUP[anim] ?? 'work';
+      const cycle = group === 'attack' ? stats.attack.cooldown : ANIM_CYCLE[group];
+      // animationSpeed is frames per 60fps tick
+      s.sprite.animationSpeed = frames.length / (cycle * 60);
       s.sprite.play();
+    }
+    // Galloping horses kick up dust
+    if (s.type === 'horseman' && s.action === 'moving' && Math.random() < 0.04) {
+      this.spawnFx('dust1', s.g.x - s.facing * 10, s.g.y + r, 0.35);
     }
     // Face the target while attacking, otherwise the movement direction
     const target = s.action === 'attacking' ? this.sprites.get(s.targetId) : null;
@@ -365,7 +485,7 @@ export class Game {
 
     const g = s.over.clear();
     const barY = -r - 22;
-    if (s.action === 'gathering') drawBar(g, barY, 26, s.gatherFill, s.carry?.type === ResourceType.GOLD ? 0xffd34d : 0x8bc34a);
+    if (s.action === 'gathering') drawBar(g, barY, 26, s.gatherFill, { gold: 0xffd34d, food: 0xe57373 }[s.carry?.type] ?? 0x8bc34a);
     else if (s.action === 'building') drawBar(g, barY, 26, this.sprites.get(s.buildingId)?.buildProgress ?? 0, 0xf0a030);
     if (s.hp < stats.hp) drawBar(g, barY + 7, 24, s.hp / stats.hp, 0x4caf50);
   }
@@ -457,21 +577,25 @@ export class Game {
     const villagers = mine.filter((s) => s.type === 'villager');
     const idle = villagers.filter((s) => !s.task).length;
     const army = mine.filter((s) => !isBuildingType(s.type) && s.type !== 'villager').length;
+    const popFull = this.pop.used >= this.pop.cap;
     const items = [
-      [{ icon: '/assets/ui/wood.png', label: 'Wood' }, this.stock.wood],
-      [{ icon: '/assets/ui/gold.png', label: 'Gold' }, this.stock.gold],
-      ['👷 Villagers', `${villagers.length} (${idle} idle)`],
-      ['⚔️ Army', army],
+      [{ icon: '/assets/ui/food.png', label: 'Comida' }, this.stock.food],
+      [{ icon: '/assets/ui/wood.png', label: 'Madera' }, this.stock.wood],
+      [{ icon: '/assets/ui/gold.png', label: 'Oro' }, this.stock.gold],
+      ['🏠 Población', `${this.pop.used}/${this.pop.cap}${this.pop.cap >= MAX_POPULATION ? ' (máx.)' : ''}`, popFull],
+      ['👷 Aldeanos', `${villagers.length} (${idle} inactivos)`],
+      ['⚔️ Ejército', army],
     ];
     const central = [...this.sprites.values()].find((s) => s.central);
     if (central) {
       const holder = this.players.get(central.owner);
-      items.push(['👑 Center', holder
-        ? `${holder.id === this.socket.id ? 'You' : holder.name} ${formatTime(central.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)}`
+      items.push(['👑 Centro', holder
+        ? `${holder.id === this.socket.id ? 'Tú' : holder.name} ${formatTime(central.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)}`
         : 'neutral']);
     }
-    this.ui.hud.replaceChildren(...items.map(([label, value]) => {
+    this.ui.hud.replaceChildren(...items.map(([label, value, warn]) => {
       const span = document.createElement('span');
+      span.classList.toggle('warn', !!warn);
       if (typeof label === 'object') {
         const img = document.createElement('img');
         img.src = label.icon;
@@ -502,12 +626,13 @@ export class Game {
       const cost = document.createElement('small');
       cost.textContent = formatCost(stats.cost);
       const trains = document.createElement('small');
-      trains.textContent = stats.trains
-        ? `Trains ${ENTITY_STATS[stats.trains].name}`
-        : `Shoots arrows · range ${stats.attack.range}`;
+      if (stats.trains) trains.textContent = `Entrena ${ENTITY_STATS[stats.trains].name}`;
+      else if (stats.attack) trains.textContent = `Dispara flechas · alcance ${stats.attack.range}`;
+      else trains.textContent = `+${stats.population} población`;
       const text = document.createElement('span');
       text.className = 'text';
-      text.append(name, cost, trains);
+      text.append(name, cost);
+      btn.title = trains.textContent;
       btn.append(img, text);
       btn.addEventListener('click', () => {
         this.placing = this.placing === type ? null : type;
@@ -520,15 +645,15 @@ export class Game {
   tooltipText() {
     if (this.placing) {
       const stats = ENTITY_STATS[this.placing];
-      return `${stats.name} — ${formatCost(stats.cost)}\nLeft-click to place, right-click / Esc to cancel`;
+      return `${stats.name} — ${formatCost(stats.cost)}\nClic izquierdo para colocar, clic derecho / Esc para cancelar`;
     }
     if (!this.hovered) return null;
 
     if (this.hovered.kind === 'resource') {
       const r = this.resources.get(this.hovered.id);
       if (!r) return null;
-      const label = r.type === ResourceType.WOOD ? 'Tree' : 'Gold mine';
-      return `${label} — ${r.amount}/${RESOURCE_STATS[r.type].amount} ${r.type}`;
+      const label = r.variant === 'bush' ? 'Arbusto' : { wood: 'Árbol', gold: 'Mina de oro', food: 'Oveja' }[r.type];
+      return `${label} — ${r.amount}/${r.max} ${RESOURCE_NAMES[r.type]}`;
     }
 
     const s = this.sprites.get(this.hovered.id);
@@ -536,35 +661,39 @@ export class Game {
     const stats = ENTITY_STATS[s.type];
     const owner = this.players.get(s.owner)?.name ?? 'neutral';
     const mine = s.owner === this.socket.id;
-    const name = s.central ? 'Central Town Center' : stats.name;
-    const lines = [`${name} (${mine ? 'you' : owner}) — HP ${s.hp}/${stats.hp}`];
+    const name = s.central ? 'Centro urbano central' : stats.name;
+    const lines = [`${name} (${mine ? 'tú' : owner}) — PV ${s.hp}/${stats.hp}`];
 
     if (s.central) {
-      if (s.hp <= 0) lines.push('Fallen! Right-click with a villager to capture it');
-      else if (!mine) lines.push('Bring its HP to 0, then send a villager in to capture it');
-      if (s.owner) lines.push(`Held for ${formatTime(s.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)} to win`);
+      if (s.hp <= 0) lines.push('¡Caído! Clic derecho con un aldeano para capturarlo');
+      else if (!mine) lines.push('Baja sus PV a 0 y luego envía un aldeano para capturarlo');
+      if (s.owner) lines.push(`Dominado ${formatTime(s.controlTime)} / ${formatTime(CENTRAL_CONTROL_TIME)} para ganar`);
     }
-    if (!mine && !s.central) lines.push('Right-click with your units to attack');
+    if (!mine && !s.central) lines.push('Clic derecho con tus unidades para atacar');
 
     if (isBuildingType(s.type)) {
-      if (stats.attack) lines.push(`Shoots enemy units: ${stats.attack.damage} dmg · range ${stats.attack.range}`);
+      if (stats.attack) {
+        lines.push(`Dispara a unidades enemigas: ${stats.attack.damage} daño cada ${stats.attack.cooldown}s · alcance ${stats.attack.range}`);
+      }
+      if (stats.population) lines.push(`+${stats.population} población`);
       if (!s.built) {
-        lines.push(`Under construction: ${Math.floor(s.buildProgress * 100)}%`);
-        if (mine) lines.push('Right-click with villagers to help build');
+        lines.push(`En construcción: ${Math.floor(s.buildProgress * 100)}%`);
+        if (mine) lines.push('Clic derecho con aldeanos para ayudar a construir');
       } else if (mine && stats.trains) {
         const unit = ENTITY_STATS[stats.trains];
-        lines.push(`Click to train ${unit.name}: ${formatCost(unit.cost)} · ${unit.trainTime}s`);
-        if (s.queue.length) lines.push(`Queue: ${s.queue.length}/${MAX_TRAIN_QUEUE} (${Math.floor(s.trainProgress * 100)}%)`);
-        if (!canAfford(this.stock, unit.cost)) lines.push('Not enough resources');
+        lines.push(`Clic para entrenar ${unit.name}: ${formatCost(unit.cost)} · ${unit.trainTime}s`);
+        if (s.queue.length) lines.push(`Cola: ${s.queue.length}/${MAX_TRAIN_QUEUE} (${Math.floor(s.trainProgress * 100)}%)`);
+        if (!canAfford(this.stock, unit.cost)) lines.push('Recursos insuficientes');
+        if (this.pop.used >= this.pop.cap) lines.push('Población al límite: construye casas');
       }
     } else if (s.type !== 'villager') {
       const { attack } = stats;
-      lines.push(`Attack ${attack.damage} · ${attack.range ? `range ${attack.range}` : 'melee'}${s.action === 'attacking' ? ' · fighting' : ''}`);
+      lines.push(`Ataque ${attack.damage} · ${attack.range ? `alcance ${attack.range}` : 'cuerpo a cuerpo'}${s.action === 'attacking' ? ' · luchando' : ''}`);
     } else if (s.type === 'villager') {
-      if (s.action === 'gathering') lines.push(`Gathering ${s.carry.type}: ${s.carry.amount}/${stats.carryCapacity}`);
-      else if (s.action === 'building') lines.push('Building');
-      else if (s.action === 'attacking') lines.push('Attacking');
-      else if (s.carry?.amount) lines.push(`Carrying ${s.carry.amount} ${s.carry.type}`);
+      if (s.action === 'gathering') lines.push(`Recolectando ${RESOURCE_NAMES[s.carry.type]}: ${s.carry.amount}/${stats.carryCapacity}`);
+      else if (s.action === 'building') lines.push('Construyendo');
+      else if (s.action === 'attacking') lines.push('Atacando');
+      else if (s.carry?.amount) lines.push(`Lleva ${s.carry.amount} de ${RESOURCE_NAMES[s.carry.type]}`);
     }
     return lines.join('\n');
   }
@@ -602,8 +731,8 @@ export class Game {
   placeBuilding() {
     const { tx, ty } = this.ghostTile();
     const stats = ENTITY_STATS[this.placing];
-    if (!canAfford(this.stock, stats.cost)) return this.showMessage('Not enough resources');
-    if (!canPlace(this.placing, tx, ty, this.isTileBlocked)) return this.showMessage('Cannot build there');
+    if (!canAfford(this.stock, stats.cost)) return this.showMessage('Recursos insuficientes');
+    if (!canPlace(this.placing, tx, ty, this.isTileBlocked)) return this.showMessage('No se puede construir ahí');
     // Selected villagers go build it; the server picks the closest villager when none are selected
     const unitIds = this.selectedUnitIds().filter((id) => this.sprites.get(id).type === 'villager');
     this.socket.emit('game:build', { type: this.placing, tx, ty, unitIds });
@@ -619,8 +748,11 @@ export class Game {
     this.selected = new Set([id]);
     if (isBuildingType(s.type) && s.built && ENTITY_STATS[s.type].trains) {
       const unit = ENTITY_STATS[ENTITY_STATS[s.type].trains];
-      if (!canAfford(this.stock, unit.cost)) return this.showMessage('Not enough resources');
-      if (s.queue.length >= MAX_TRAIN_QUEUE) return this.showMessage('Queue is full');
+      if (!canAfford(this.stock, unit.cost)) return this.showMessage('Recursos insuficientes');
+      if (s.queue.length >= MAX_TRAIN_QUEUE) return this.showMessage('La cola está llena');
+      if (this.pop.used >= this.pop.cap) {
+        return this.showMessage(this.pop.cap >= MAX_POPULATION ? 'Límite de población alcanzado' : 'Necesitas más casas');
+      }
       this.socket.emit('game:train', { buildingId: id });
     }
   }
@@ -668,6 +800,10 @@ export class Game {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     this.app.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    this.app.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.zoomAt({ x: e.offsetX, y: e.offsetY }, e.deltaY < 0 ? 1.1 : 1 / 1.1);
+    }, { passive: false });
 
     const stage = this.app.stage;
     stage.eventMode = 'static';

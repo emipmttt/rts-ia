@@ -4,13 +4,15 @@
   "scripts": {
     "dev": "concurrently -k -n server,client -c blue,green \"CLIENT_PORT=5173 node --watch server/index.js\" \"vite\"",
     "build": "vite build",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "deploy": "npm ci && npm run build && npm start"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "type": "module",
+  "engines": { "node": ">=20" },
   "dependencies": {
     "express": "^5.2.1",
     "pixi.js": "^8.22.0",

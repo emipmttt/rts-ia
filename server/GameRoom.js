@@ -1,6 +1,6 @@
 import {
   MAP_WIDTH, MAP_HEIGHT, TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, STARTING_VILLAGERS, STARTING_STOCK,
-  MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, EntityType, ENTITY_STATS, RESOURCE_STATS,
+  MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, EntityType, ENTITY_STATS, RESOURCE_STATS, MAX_POPULATION,
 } from '../shared/constants.js';
 import {
   isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford,
@@ -70,6 +70,7 @@ export class GameRoom {
     const faction = free[Math.floor(Math.random() * free.length)];
     this.players.set(socket.id, {
       id: socket.id, name, faction: faction.id, color: faction.color, stock: { ...STARTING_STOCK }, defeated: false,
+      pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
     });
     socket.join(this.id);
     this.broadcastRoom();
@@ -92,6 +93,7 @@ export class GameRoom {
     this.status = RoomStatus.PLAYING;
 
     this.startingPlayers = this.players.size;
+    this.startedAt = Date.now();
     const spawns = assignSpawns([...this.players.keys()]);
     const mapCenter = { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 };
     this.world = generateWorld(Math.floor(Math.random() * 2 ** 31), [...spawns.values()], [mapCenter]);
@@ -108,7 +110,11 @@ export class GameRoom {
 
     this.io.to(this.id).emit('game:start', {
       map: { width: MAP_WIDTH, height: MAP_HEIGHT, tiles: this.world.tiles },
-      resources: [...this.resources.values()].map(({ id, type, tx, ty, amount }) => ({ id, type, tx, ty, amount })),
+      resources: [...this.resources.values()].map(({
+        id, type, variant, tx, ty, amount, max,
+      }) => ({
+        id, type, variant, tx, ty, amount, max,
+      })),
       players: this.details().players,
     });
     this.interval = setInterval(() => this.tick(), 1000 / TICK_RATE);
@@ -210,8 +216,8 @@ export class GameRoom {
     if (!player || this.status !== RoomStatus.PLAYING || !isBuildingType(type)) return;
     if (!Number.isInteger(tx) || !Number.isInteger(ty)) return;
     const { cost } = ENTITY_STATS[type];
-    if (!canAfford(player.stock, cost)) return this.error(socketId, 'Not enough resources');
-    if (!canPlace(type, tx, ty, this.isTileBlocked)) return this.error(socketId, 'Cannot build there');
+    if (!canAfford(player.stock, cost)) return this.error(socketId, 'Recursos insuficientes');
+    if (!canPlace(type, tx, ty, this.isTileBlocked)) return this.error(socketId, 'No se puede construir ahí');
 
     let builders = this.ownedVillagers(socketId, unitIds);
     if (!builders.length) {
@@ -220,7 +226,7 @@ export class GameRoom {
       const closest = this.closest([...this.entities.values()].filter(
         (e) => e.owner === socketId && e.type === EntityType.VILLAGER,
       ), x, y);
-      if (!closest) return this.error(socketId, 'You need a villager to build');
+      if (!closest) return this.error(socketId, 'Necesitas un aldeano para construir');
       builders = [closest];
     }
 
@@ -256,9 +262,13 @@ export class GameRoom {
     if (!player || !building || building.owner !== socketId || !isBuilding(building) || !building.built) return;
     const unitType = ENTITY_STATS[building.type].trains;
     if (!unitType) return;
-    if (building.queue.length >= MAX_TRAIN_QUEUE) return this.error(socketId, 'Queue is full');
+    if (building.queue.length >= MAX_TRAIN_QUEUE) return this.error(socketId, 'La cola está llena');
     const { cost } = ENTITY_STATS[unitType];
-    if (!canAfford(player.stock, cost)) return this.error(socketId, 'Not enough resources');
+    this.updatePopulation(player);
+    if (player.pop >= player.popCap) {
+      return this.error(socketId, player.popCap >= MAX_POPULATION ? 'Límite de población alcanzado' : 'Necesitas más casas');
+    }
+    if (!canAfford(player.stock, cost)) return this.error(socketId, 'Recursos insuficientes');
     for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
     building.queue.push(unitType);
   }
@@ -325,7 +335,10 @@ export class GameRoom {
       if (!dropOff) { u.task = null; return; }
       if (this.moveToward(u, dropOff.x, dropOff.y, buildingSize(dropOff.type) / 2 + stats.radius)) {
         const player = this.players.get(u.owner);
-        if (player) player.stock[carry.type] += carry.amount;
+        if (player) {
+          player.stock[carry.type] += carry.amount;
+          player.stats.gathered += carry.amount;
+        }
         carry.amount = 0;
       }
       return;
@@ -385,13 +398,13 @@ export class GameRoom {
     if (u.cooldown > 0) return;
     u.cooldown = attack.cooldown;
     if (attack.range > 0) this.shots.push({ x: u.x, y: u.y, targetId: target.id });
-    this.damage(target, attack.damage);
+    this.damage(target, attack.damage, u.owner);
   }
 
-  // Finished towers shoot the closest enemy unit in range, sticking to a target while it stays in range
+  // Finished towers and town centers shoot the closest enemy unit in range, sticking to a target while it stays in range
   updateTower(b) {
     const { attack } = ENTITY_STATS[b.type];
-    if (!attack || !b.built || !b.owner) return;
+    if (!attack || !b.built || !b.owner || b.hp <= 0) return;
     b.cooldown = Math.max(0, b.cooldown - DT);
     const inRange = (e) => e && isUnit(e) && e.owner !== b.owner
       && Math.hypot(e.x - b.x, e.y - b.y) <= attack.range + ENTITY_STATS[e.type].radius;
@@ -404,13 +417,19 @@ export class GameRoom {
     }
     if (!target || b.cooldown > 0) return;
     b.cooldown = attack.cooldown;
-    this.shots.push({ x: b.x, y: b.y, targetId: target.id });
-    this.damage(target, attack.damage);
+    this.shots.push({ x: b.x, y: b.y - buildingSize(b.type) / 2, targetId: target.id });
+    this.damage(target, attack.damage, b.owner);
   }
 
-  damage(target, amount) {
+  damage(target, amount, attackerOwner) {
     target.hp -= amount;
     if (target.hp > 0) return;
+    if (isUnit(target)) {
+      const victim = this.players.get(target.owner);
+      if (victim) victim.stats.lost++;
+      const killer = this.players.get(attackerOwner);
+      if (killer) killer.stats.kills++;
+    }
     if (target.central) {
       // The central town center can't be destroyed: it falls and waits for a villager to claim it
       target.hp = 0;
@@ -428,7 +447,7 @@ export class GameRoom {
     c.controlTime = 0;
     c.queue = [];
     c.trainProgress = 0;
-    if (previous) this.notice(`${previous.name} lost the central Town Center!`);
+    if (previous) this.notice(`¡${previous.name} perdió el Centro urbano central!`);
   }
 
   // A villager walks into the fallen central town center and claims it (the villager is used up)
@@ -440,7 +459,7 @@ export class GameRoom {
     c.hp = ENTITY_STATS[c.type].hp;
     c.controlTime = 0;
     this.removeEntity(u);
-    this.notice(`${this.players.get(u.owner)?.name} captured the central Town Center!`);
+    this.notice(`¡${this.players.get(u.owner)?.name} capturó el Centro urbano central!`);
   }
 
   // Idle soldiers attack the closest enemy unit in range
@@ -462,12 +481,30 @@ export class GameRoom {
     b.trainProgress = 0;
     const angle = Math.atan2(MAP_HEIGHT / 2 - b.y, MAP_WIDTH / 2 - b.x) + (Math.random() - 0.5);
     const distance = buildingSize(b.type) / 2 + ENTITY_STATS[unitType].radius + 6;
+    const player = this.players.get(b.owner);
+    if (player) player.stats.trained++;
     this.addUnit(
       unitType,
       b.owner,
       clamp(b.x + Math.cos(angle) * distance, 0, MAP_WIDTH),
       clamp(b.y + Math.sin(angle) * distance, 0, MAP_HEIGHT),
     );
+  }
+
+  // Units alive plus units waiting in queues count against the cap, which houses and town centers raise
+  updatePopulation(player) {
+    let pop = 0;
+    let cap = 0;
+    for (const e of this.entities.values()) {
+      if (e.owner !== player.id) continue;
+      if (isUnit(e)) pop++;
+      else {
+        pop += e.queue.length;
+        if (e.built) cap += ENTITY_STATS[e.type].population ?? 0;
+      }
+    }
+    player.pop = pop;
+    player.popCap = Math.min(MAX_POPULATION, cap);
   }
 
   tick() {
@@ -495,6 +532,7 @@ export class GameRoom {
       this.resourceChanges.clear();
     }
 
+    for (const p of this.players.values()) this.updatePopulation(p);
     this.io.to(this.id).emit('game:state', {
       players: [...this.players.values()],
       entities: [...this.entities.values()].map((e) => this.serialize(e)),
@@ -507,7 +545,7 @@ export class GameRoom {
     if (this.status !== RoomStatus.PLAYING) return;
 
     if (this.central?.owner && this.central.controlTime >= CENTRAL_CONTROL_TIME) {
-      this.endGame(this.central.owner, 'held the central Town Center');
+      this.endGame(this.central.owner, 'dominó el Centro urbano central');
       return;
     }
 
@@ -521,19 +559,30 @@ export class GameRoom {
       if (this.central.owner === player.id) this.loseCentral();
       for (const e of [...this.entities.values()]) if (e.owner === player.id) this.removeEntity(e);
       this.io.to(player.id).emit('game:defeated');
-      this.notice(`${player.name} has been defeated`);
+      this.notice(`${player.name} ha sido derrotado`);
     }
 
     const alive = [...this.players.values()].filter((p) => !p.defeated);
-    if (this.startingPlayers > 1 && alive.length === 1) this.endGame(alive[0].id, 'destroyed every enemy Town Center');
-    else if (alive.length === 0) this.endGame(null, 'nobody survived');
+    if (this.startingPlayers > 1 && alive.length === 1) this.endGame(alive[0].id, 'destruyó todos los Centros urbanos enemigos');
+    else if (alive.length === 0) this.endGame(null, 'nadie sobrevivió');
   }
 
   endGame(winnerId, reason) {
     this.status = RoomStatus.FINISHED;
     clearInterval(this.interval);
     const winner = this.players.get(winnerId);
-    this.io.to(this.id).emit('game:over', { winnerId, winnerName: winner?.name ?? null, reason });
+    this.io.to(this.id).emit('game:over', {
+      winnerId,
+      winnerName: winner?.name ?? null,
+      winnerFaction: winner?.faction ?? null,
+      reason,
+      duration: (Date.now() - this.startedAt) / 1000,
+      players: [...this.players.values()].map(({
+        id, name, faction, color, stats,
+      }) => ({
+        id, name, faction, color, stats,
+      })),
+    });
     this.broadcastRoom();
     this.onStatusChange();
   }

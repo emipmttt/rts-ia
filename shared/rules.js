@@ -1,4 +1,6 @@
-import { ENTITY_STATS, MAP_TILES, TILE_SIZE } from './constants.js';
+import {
+  ENTITY_STATS, MAP_TILES, TILE_SIZE, RESOURCE_NAMES,
+} from './constants.js';
 
 export const isBuildingType = (type) => ENTITY_STATS[type]?.kind === 'building';
 export const isUnitType = (type) => ENTITY_STATS[type]?.kind === 'unit';
@@ -33,4 +35,4 @@ export function canPlace(type, tx, ty, isBlocked) {
 
 export const canAfford = (stock, cost) => Object.entries(cost).every(([k, v]) => (stock?.[k] ?? 0) >= v);
 
-export const formatCost = (cost) => Object.entries(cost).map(([k, v]) => `${v} ${k}`).join(', ');
+export const formatCost = (cost) => Object.entries(cost).map(([k, v]) => `${v} ${RESOURCE_NAMES[k] ?? k}`).join(', ');
