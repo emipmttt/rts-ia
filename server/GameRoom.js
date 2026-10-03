@@ -13,6 +13,7 @@ import { findPath, clearLine } from './pathfinding.js';
 const DT = 1 / TICK_RATE;
 const RETARGET_RADIUS = 400; // how far a villager looks for more of the same resource
 const STUCK_TICKS = TICK_RATE * 2; // a gatherer that gets no closer for this long picks another resource
+const NEXT_CONSTRUCTION_RADIUS = 900; // a builder done with a building looks this far for the next one
 const CROWD_PENALTY = 60; // px a resource counts as farther away per villager already working it
 const SEPARATION_CELL = 32; // grid cell size for unit collision lookups (>= largest unit diameter)
 const SEPARATION_ITERATIONS = 4;
@@ -716,7 +717,15 @@ export class GameRoom {
   // Each villager working on a building adds its own build speed, so more villagers = faster
   updateBuilder(u) {
     const building = this.entities.get(u.task.buildingId);
-    if (!building || building.built) { u.task = null; return; }
+    if (!building || building.built) {
+      // Finished a farm: start working it. Otherwise move on to the closest pending construction.
+      if (building?.built && ENTITY_STATS[building.type].farm) { u.task = { type: 'farm', buildingId: building.id }; return; }
+      const pending = [...this.entities.values()].filter((e) => isBuilding(e) && e.owner === u.owner && !e.built);
+      const next = this.closest(pending, u.x, u.y, NEXT_CONSTRUCTION_RADIUS);
+      if (next) u.task = { type: 'build', buildingId: next.id };
+      else { u.task = null; u.tx = u.x; u.ty = u.y; }
+      return;
+    }
     const reach = buildingSize(building.type) / 2 + ENTITY_STATS[u.type].radius;
     if (!this.moveToward(u, building.x, building.y, reach)) return;
 
