@@ -5,7 +5,7 @@
     "dev": "concurrently -k -n server,client -c blue,green \"CLIENT_PORT=5173 node --watch server/index.js\" \"vite\"",
     "build": "vite build",
     "start": "node server/index.js",
-    "deploy": "npm ci && npm run build && npm start"
+    "deploy": "npm ci --omit=dev && npm start"
   },
   "keywords": [],
   "author": "",

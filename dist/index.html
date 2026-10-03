@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tiny Swords RTS</title>
+    <script type="module" crossorigin src="/assets/index-lAXWuiEc.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/CanvasPool-CWB7dUpA.js">
+    <link rel="modulepreload" crossorigin href="/assets/Filter-BCRRlzOx.js">
+    <link rel="modulepreload" crossorigin href="/assets/canvasUtils-DgOpi9E8.js">
+    <link rel="modulepreload" crossorigin href="/assets/Cache-CjXwQj7Q.js">
+    <link rel="modulepreload" crossorigin href="/assets/GCManagedHash-D-KtdWRQ.js">
+    <link rel="modulepreload" crossorigin href="/assets/RenderTargetSystem-BpoD1MMF.js">
+    <link rel="modulepreload" crossorigin href="/assets/getTextureBatchBindGroup-BztqtdtG.js">
+    <link rel="modulepreload" crossorigin href="/assets/GraphicsContext-cHTD_JxT.js">
+    <link rel="modulepreload" crossorigin href="/assets/getTexelRangeRects-CUrMOIMb.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-Dv87M7hJ.css">
+  </head>
+  <body>
+    <!-- Lobby: list and create rooms -->
+    <section id="lobby" class="screen panel-paper">
+      <h1 class="ribbon-title">Tiny Swords RTS</h1>
+      <label>Tu nombre <input id="player-name" maxlength="20" /></label>
+      <form id="create-form" class="row">
+        <input id="room-name" maxlength="30" placeholder="Nombre de la sala" />
+        <button type="submit">Crear sala</button>
+      </form>
+      <h2>Salas</h2>
+      <ul id="room-list"></ul>
+      <p id="lobby-error" class="error"></p>
+    </section>
+
+    <!-- Room: waiting for host to start -->
+    <section id="room" class="screen panel-paper hidden">
+      <h1 id="room-title"></h1>
+      <p id="room-info"></p>
+      <ul id="player-list"></ul>
+      <div class="row">
+        <button id="start-btn" class="hidden">Iniciar partida</button>
+        <button id="leave-btn" class="red">Salir de la sala</button>
+      </div>
+      <p id="room-error" class="error"></p>
+    </section>
+
+    <!-- Game: PixiJS canvas is mounted here -->
+    <div id="game" class="hidden">
+      <div id="hud"></div>
+      <div id="message" class="hidden"></div>
+      <nav id="build-menu"></nav>
+      <div id="tooltip" class="hidden"></div>
+      <div id="game-over" class="hidden">
+        <div class="rays"></div>
+        <div id="confetti"></div>
+        <div class="end-content">
+          <div class="crest">
+            <img id="sword-left" class="sword left" alt="" />
+            <img id="sword-right" class="sword right" alt="" />
+          </div>
+          <div id="end-ribbon" class="end-ribbon"><h1 id="game-over-title"></h1></div>
+          <div class="end-panel">
+            <p id="game-over-text"></p>
+            <p id="game-over-time" class="muted"></p>
+            <table id="end-stats"></table>
+            <div class="row">
+              <button id="spectate-btn">Seguir mirando</button>
+              <button id="back-btn" class="red">Volver al lobby</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </body>
+</html>
