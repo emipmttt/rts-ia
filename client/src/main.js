@@ -1,13 +1,13 @@
 import { io } from 'socket.io-client';
 import { Game } from './game.js';
 
-// Secret per-tab token: after a dropped connection or a reload the server recognises this player
-// and puts them back in their game
+// Secret per-browser token: after a dropped connection, a reload or reopening the browser the server
+// recognises this player and puts them back in their game
 const newToken = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 let token;
 try {
-  token = sessionStorage.getItem('playerToken');
-  if (!token) sessionStorage.setItem('playerToken', token = newToken());
+  token = localStorage.getItem('playerToken');
+  if (!token) localStorage.setItem('playerToken', token = newToken());
 } catch { token = newToken(); }
 const socket = io(import.meta.env.DEV ? `http://${location.hostname}:3001` : undefined, { auth: { token } });
 let myId = null; // public player id, sent by the server on connect
