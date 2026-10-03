@@ -1,5 +1,5 @@
 import {
-  ENTITY_STATS, MAP_TILES, TILE_SIZE, RESOURCE_NAMES,
+  ENTITY_STATS, TILE_SIZE, RESOURCE_NAMES,
 } from './constants.js';
 
 export const isBuildingType = (type) => ENTITY_STATS[type]?.kind === 'building';
@@ -27,9 +27,9 @@ export function footprint(type, tx, ty) {
 }
 
 // isBlocked(x, y) -> true when the tile has a resource or building
-export function canPlace(type, tx, ty, isBlocked) {
+export function canPlace(type, tx, ty, isBlocked, mapTiles) {
   return footprint(type, tx, ty).every(([x, y]) => (
-    x >= 0 && y >= 0 && x < MAP_TILES && y < MAP_TILES && !isBlocked(x, y)
+    x >= 0 && y >= 0 && x < mapTiles && y < mapTiles && !isBlocked(x, y)
   ));
 }
 

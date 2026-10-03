@@ -23,29 +23,29 @@ export class Lobby {
 
   roomOf(socket) { return this.rooms.get(this.playerRoom.get(socket.data.playerId)); }
 
-  create(socket, { roomName, playerName } = {}) {
+  create(socket, { roomName, playerName, flag } = {}) {
     this.leave(socket);
     const id = randomUUID().slice(0, 8);
     const room = new GameRoom(this.io, id, cleanName(roomName, `Sala ${id}`, 30), socket.data.playerId);
     room.onStatusChange = () => this.broadcastRooms();
     this.rooms.set(id, room);
-    this.enter(socket, room, playerName);
+    this.enter(socket, room, playerName, flag);
   }
 
-  join(socket, { roomId, playerName } = {}) {
+  join(socket, { roomId, playerName, flag } = {}) {
     const room = this.rooms.get(roomId);
     if (!room) return socket.emit('lobby:error', { message: 'Sala no encontrada' });
     if (room === this.roomOf(socket)) return;
     if (room.status !== RoomStatus.WAITING) return socket.emit('lobby:error', { message: 'La partida ya comenzó' });
     if (room.isFull) return socket.emit('lobby:error', { message: 'La sala está llena' });
     this.leave(socket);
-    this.enter(socket, room, playerName);
+    this.enter(socket, room, playerName, flag);
   }
 
-  enter(socket, room, playerName) {
+  enter(socket, room, playerName, flag) {
     const { playerId } = socket.data;
     this.io.in(playerId).socketsJoin(room.id);
-    room.addPlayer(playerId, cleanName(playerName, 'Jugador'));
+    room.addPlayer(playerId, cleanName(playerName, 'Jugador'), flag);
     this.playerRoom.set(playerId, room.id);
     this.broadcastRooms();
   }

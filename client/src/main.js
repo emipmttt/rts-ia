@@ -31,10 +31,76 @@ nameInput.addEventListener('change', () => {
 });
 const playerName = () => nameInput.value.trim();
 
+// ---- Flag editor ----
+// The player draws a shape in black; the game receives it as white on transparent so it can be tinted
+// with the colour the player gets in each match. Saved between visits.
+const flagCanvas = $('flag-canvas');
+const flagCtx = flagCanvas.getContext('2d');
+const FLAG_BRUSH = 6;
+try {
+  const saved = localStorage.getItem('flagDrawing');
+  if (saved) {
+    const img = new Image();
+    img.onload = () => flagCtx.drawImage(img, 0, 0);
+    img.src = saved;
+  }
+} catch { /* storage unavailable */ }
+let drawingFlag = null; // last point while the pointer is down
+const flagPoint = (e) => {
+  const rect = flagCanvas.getBoundingClientRect();
+  return { x: ((e.clientX - rect.left) / rect.width) * flagCanvas.width, y: ((e.clientY - rect.top) / rect.height) * flagCanvas.height };
+};
+flagCanvas.addEventListener('pointerdown', (e) => {
+  flagCanvas.setPointerCapture(e.pointerId);
+  drawingFlag = flagPoint(e);
+  flagCtx.fillStyle = '#000';
+  flagCtx.beginPath();
+  flagCtx.arc(drawingFlag.x, drawingFlag.y, FLAG_BRUSH / 2, 0, Math.PI * 2);
+  flagCtx.fill();
+});
+flagCanvas.addEventListener('pointermove', (e) => {
+  if (!drawingFlag) return;
+  const p = flagPoint(e);
+  flagCtx.strokeStyle = '#000';
+  flagCtx.lineWidth = FLAG_BRUSH;
+  flagCtx.lineCap = 'round';
+  flagCtx.beginPath();
+  flagCtx.moveTo(drawingFlag.x, drawingFlag.y);
+  flagCtx.lineTo(p.x, p.y);
+  flagCtx.stroke();
+  drawingFlag = p;
+});
+const endFlagStroke = () => {
+  if (!drawingFlag) return;
+  drawingFlag = null;
+  try { localStorage.setItem('flagDrawing', flagCanvas.toDataURL('image/png')); } catch { /* storage unavailable */ }
+};
+flagCanvas.addEventListener('pointerup', endFlagStroke);
+flagCanvas.addEventListener('pointercancel', endFlagStroke);
+$('flag-clear').addEventListener('click', () => {
+  flagCtx.clearRect(0, 0, flagCanvas.width, flagCanvas.height);
+  try { localStorage.removeItem('flagDrawing'); } catch { /* storage unavailable */ }
+});
+
+// The drawing as white on transparent, or null when nothing was drawn
+function exportFlag() {
+  const { data } = flagCtx.getImageData(0, 0, flagCanvas.width, flagCanvas.height);
+  if (!data.some((v, i) => i % 4 === 3 && v > 0)) return null;
+  const out = document.createElement('canvas');
+  out.width = flagCanvas.width;
+  out.height = flagCanvas.height;
+  const ctx = out.getContext('2d');
+  ctx.drawImage(flagCanvas, 0, 0);
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, out.width, out.height);
+  return out.toDataURL('image/png');
+}
+
 // ---- Lobby ----
 $('create-form').addEventListener('submit', (e) => {
   e.preventDefault();
-  socket.emit('room:create', { roomName: $('room-name').value, playerName: playerName() });
+  socket.emit('room:create', { roomName: $('room-name').value, playerName: playerName(), flag: exportFlag() });
   $('room-name').value = '';
 });
 
@@ -56,7 +122,7 @@ socket.on('lobby:rooms', (rooms) => {
     const btn = document.createElement('button');
     btn.textContent = 'Unirse';
     btn.disabled = room.status !== 'waiting' || room.players >= room.max;
-    btn.addEventListener('click', () => socket.emit('room:join', { roomId: room.id, playerName: playerName() }));
+    btn.addEventListener('click', () => socket.emit('room:join', { roomId: room.id, playerName: playerName(), flag: exportFlag() }));
     li.append(label, btn);
     list.append(li);
   }

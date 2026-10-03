@@ -1,10 +1,10 @@
 import {
-  AnimatedSprite, Application, BlurFilter, Container, Graphics, Rectangle, Sprite, TilingSprite,
+  AnimatedSprite, Application, BlurFilter, Container, Graphics, Rectangle, Sprite, Texture, TilingSprite,
 } from 'pixi.js';
 import { loadAssets } from './assets.js';
 import {
-  ENTITY_STATS, MAP_TILES, TILE_SIZE, Terrain, ResourceType, RESOURCE_NAMES, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
-  MAX_POPULATION,
+  ENTITY_STATS, TILE_SIZE, Terrain, ResourceType, RESOURCE_NAMES, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
+  MAX_POPULATION, GATHER_UPGRADES, SHEEP,
 } from '../../shared/constants.js';
 import {
   isBuildingType, buildingSize, tileForCenter, footprint, canPlace, canAfford, formatCost,
@@ -27,13 +27,27 @@ const UNIT_ART = {
   swordsman: { sheet: 'warrior', scale: 0.36 },
   archer: { sheet: 'archer', scale: 0.34 },
   horseman: { sheet: 'lancer', scale: 0.26 },
+  monk: { sheet: 'pawn', scale: 0.32 }, // a pawn with a halo
+  guard: { sheet: 'lancer', scale: 0.3 },
 };
+// Units that fight in the army; one in every FLAG_EVERY of them carries the player's flag
+const SOLDIERS = new Set(['swordsman', 'archer', 'horseman']);
+const FLAG_EVERY = 5;
+const FLAG_SIZE = { width: 24, height: 16 };
+const FLAG_POLE = 36; // px above the unit's centre
+const RESOURCE_COLORS = {
+  gold: 0xffd34d, food: 0xe57373, wood: 0x8bc34a, stone: 0xb0b0b0,
+};
+const STONE_TINT = 0x9aa0a6;
+const HEAL_COLOR = 0x7dff7a;
 // Building texture per building type; width = footprint * widthFactor
 const BUILDING_ART = {
   townCenter: { texture: 'castle', widthFactor: 1.1 },
   barracks: { texture: 'barracks', widthFactor: 1.15 },
   archeryRange: { texture: 'archery', widthFactor: 1.15 },
-  stable: { texture: 'monastery', widthFactor: 1.15 },
+  stable: { texture: 'barracks', widthFactor: 1.15, tint: 0xd8b48a }, // the barracks art in warm wood
+  monastery: { texture: 'monastery', widthFactor: 1.15 },
+  lumberCamp: { texture: 'house3', widthFactor: 0.95, logs: true },
   tower: { texture: 'tower', widthFactor: 1.5 },
   house: { texture: 'house1', variants: ['house1', 'house2', 'house3'], widthFactor: 1.3 },
   // Farmhouse sits on the middle tile; the crop fields around it are drawn separately
@@ -60,6 +74,27 @@ const formatTime = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor
 
 // Bottom of a building's sprite relative to its centre (farmhouses stand on the middle tile)
 const spriteBottom = (type) => (BUILDING_ART[type].centerTile ? TILE_SIZE / 2 : buildingSize(type) / 2) + 4;
+
+// Flag textures per player id from their hand-drawn shapes (white on transparent, tinted at draw time);
+// the null key holds a plain rectangular flag for players who didn't draw one
+async function loadFlags(players) {
+  const textures = new Map();
+  const plain = document.createElement('canvas');
+  plain.width = FLAG_SIZE.width * 2;
+  plain.height = FLAG_SIZE.height * 2;
+  plain.getContext('2d').fillStyle = '#fff';
+  plain.getContext('2d').fillRect(0, 0, plain.width, plain.height);
+  textures.set(null, Texture.from(plain));
+  await Promise.all(players.filter((p) => p.flag).map(async (p) => {
+    try {
+      const img = new Image();
+      img.src = p.flag;
+      await img.decode();
+      textures.set(p.id, Texture.from(img));
+    } catch { /* unreadable drawing: the plain flag is used */ }
+  }));
+  return textures;
+}
 
 // Draws a progress bar centred at (0, y) on graphics g
 function drawBar(g, y, width, fraction, color) {
@@ -90,13 +125,17 @@ export class Game {
     this.destroyed = false;
   }
 
-  async init({ map, resources, players }) {
+  async init({
+    map, resources, players, sheep,
+  }) {
     this.app = new Application();
     await this.app.init({ resizeTo: window, background: 0x1b2a1b, antialias: true });
     if (this.destroyed) { this.app.destroy(true); return; }
     this.mount.prepend(this.app.canvas);
 
     for (const p of players) this.players.set(p.id, p);
+    this.flagTextures = await loadFlags(players);
+    this.bearers = new Set(); // ids of the soldiers carrying their player's flag
 
     this.assets = await loadAssets();
     if (this.destroyed) return;
@@ -104,6 +143,7 @@ export class Game {
     this.world = new Container();
     this.app.stage.addChild(this.world);
     this.tiles = map.tiles;
+    this.mapTiles = Math.sqrt(map.tiles.length);
     this.world.addChild(this.drawGround(map));
     this.fieldsLayer = new Container(); // farm crop fields, on the ground under everything else
     this.world.addChild(this.fieldsLayer);
@@ -119,6 +159,7 @@ export class Game {
     this.ghost.visible = false;
     this.world.addChild(this.objects, this.effects, this.fxLayer, this.arrowLayer, this.overlay, this.ghost);
     for (const r of resources) this.addResource(r);
+    this.applySheep(sheep);
     this.selectionBox = new Graphics();
     this.app.stage.addChild(this.selectionBox);
 
@@ -138,15 +179,15 @@ export class Game {
     const grass = new TilingSprite({ texture: this.assets.grass, width: map.width, height: map.height });
     grass.tileScale.set(TILE_SIZE / 64);
 
-    const tileAt = (tx, ty) => map.tiles[ty * MAP_TILES + tx];
+    const tileAt = (tx, ty) => map.tiles[ty * this.mapTiles + tx];
     const is = (terrain) => (tx, ty) => tileAt(tx, ty) === terrain;
     const isWater = (tx, ty) => tileAt(tx, ty) === Terrain.WATER || tileAt(tx, ty) === Terrain.BRIDGE;
     // One soft layer per terrain: a base colour plus a lighter core on tiles surrounded by the same terrain
     const blobs = (match, radius, color, coreColor, coreAlpha) => {
       const base = new Graphics();
       const core = new Graphics();
-      for (let ty = 0; ty < MAP_TILES; ty++) {
-        for (let tx = 0; tx < MAP_TILES; tx++) {
+      for (let ty = 0; ty < this.mapTiles; ty++) {
+        for (let tx = 0; tx < this.mapTiles; tx++) {
           if (!match(tx, ty)) continue;
           const cx = (tx + 0.5) * TILE_SIZE;
           const cy = (ty + 0.5) * TILE_SIZE;
@@ -180,8 +221,8 @@ export class Game {
   // Wooden planks across the river, with rails along the water on both sides
   drawBridges(map, isBridge, isWater) {
     const g = new Graphics();
-    for (let ty = 0; ty < MAP_TILES; ty++) {
-      for (let tx = 0; tx < MAP_TILES; tx++) {
+    for (let ty = 0; ty < this.mapTiles; ty++) {
+      for (let tx = 0; tx < this.mapTiles; tx++) {
         if (!isBridge(tx, ty)) continue;
         const x = tx * TILE_SIZE;
         const y = ty * TILE_SIZE;
@@ -222,6 +263,11 @@ export class Game {
       g = animated(this.assets.bushes[r.id % this.assets.bushes.length], 0.08);
       g.anchor.set(0.5, 0.8);
       g.scale.set(0.38);
+    } else if (r.type === ResourceType.STONE) {
+      g = new Sprite(this.assets.gold[r.id % this.assets.gold.length]);
+      g.anchor.set(0.5, 0.75);
+      g.scale.set(0.42);
+      g.tint = STONE_TINT;
     } else if (r.type === ResourceType.WOOD) {
       g = animated(this.assets.trees[r.id % this.assets.trees.length], 0.1);
       g.anchor.set(0.5, 0.92);
@@ -234,8 +280,11 @@ export class Game {
     g.position.set((r.tx + 0.5) * TILE_SIZE, (r.ty + 1) * TILE_SIZE);
     g.zIndex = g.y;
     this.objects.addChild(g);
-    this.resources.set(r.id, { ...r, g });
-    this.resourceAt.set(tileKey(r.tx, r.ty), r.id);
+    this.resources.set(r.id, {
+      ...r, x: (r.tx + 0.5) * TILE_SIZE, y: (r.ty + 0.5) * TILE_SIZE, g,
+    });
+    // Sheep walk around, so they are picked by distance instead of by tile
+    if (r.variant !== 'sheep') this.resourceAt.set(tileKey(r.tx, r.ty), r.id);
   }
 
   applyResourceChanges(changes) {
@@ -251,8 +300,32 @@ export class Game {
     }
   }
 
-  applyState({ players, entities }) {
+  // Sheep positions and owners, sent every tick
+  applySheep(sheep) {
+    for (const { id, x, y, owner } of sheep ?? []) {
+      const r = this.resources.get(id);
+      if (!r) continue;
+      Object.assign(r, { x, y, owner });
+    }
+  }
+
+  // One soldier in every FLAG_EVERY of each player's army (at least one) carries their flag
+  pickFlagBearers() {
+    const armies = new Map();
+    for (const [id, s] of this.sprites) {
+      if (!SOLDIERS.has(s.type) || !s.owner) continue;
+      if (!armies.has(s.owner)) armies.set(s.owner, []);
+      armies.get(s.owner).push(id);
+    }
+    this.bearers = new Set();
+    for (const ids of armies.values()) {
+      ids.sort((a, b) => a - b).forEach((id, i) => { if (i % FLAG_EVERY === 0) this.bearers.add(id); });
+    }
+  }
+
+  applyState({ players, entities, sheep }) {
     if (!this.objects) return;
+    this.applySheep(sheep);
     this.players = new Map(players.map((p) => [p.id, p]));
     const me = this.players.get(this.myId);
     if (me) {
@@ -280,6 +353,7 @@ export class Game {
       this.sprites.delete(id);
       this.selected.delete(id);
     }
+    this.pickFlagBearers();
     if (!this.focused) this.focusOnBase();
     this.renderHud();
   }
@@ -327,11 +401,11 @@ export class Game {
   // Picks the sheet that matches what the unit is doing this tick
   unitAnim(s) {
     if (s.type === 'villager') {
-      if (s.action === 'gathering') return { gold: 'pickaxe', food: 'knife' }[s.carry?.type] ?? 'axe';
+      if (s.action === 'gathering') return { gold: 'pickaxe', stone: 'pickaxe', food: 'knife' }[s.carry?.type] ?? 'axe';
       if (s.action === 'building') return 'hammer';
       if (s.action === 'attacking') return 'axe';
       if (s.action === 'moving') {
-        if (s.carry?.amount > 0) return `run_${{ gold: 'gold', food: 'meat' }[s.carry.type] ?? 'wood'}`;
+        if (s.carry?.amount > 0) return `run_${{ gold: 'gold', stone: 'gold', food: 'meat' }[s.carry.type] ?? 'wood'}`;
         return 'run';
       }
       return 'idle';
@@ -363,7 +437,7 @@ export class Game {
     const k = this.world.scale.x;
     const slack = 160;
     const { width, height } = this.app.screen;
-    const mapSize = MAP_TILES * TILE_SIZE * k;
+    const mapSize = this.mapTiles * TILE_SIZE * k;
     const clampAxis = (pos, view) => Math.max(Math.min(pos, slack), view - mapSize - slack);
     this.world.x = clampAxis(this.world.x, width);
     this.world.y = clampAxis(this.world.y, height);
@@ -386,7 +460,7 @@ export class Game {
   // Tiles taken by resources or buildings, as known by the client
   isTileBlocked = (x, y) => {
     if (this.resourceAt.has(tileKey(x, y))) return true;
-    const terrain = this.tiles?.[y * MAP_TILES + x];
+    const terrain = this.tiles?.[y * this.mapTiles + x];
     if (terrain === Terrain.WATER || terrain === Terrain.BRIDGE) return true;
     for (const s of this.sprites.values()) {
       if (!isBuildingType(s.type)) continue;
@@ -413,6 +487,9 @@ export class Game {
   }
 
   resourceAtPoint(x, y) {
+    for (const r of this.resources.values()) {
+      if (r.variant === 'sheep' && Math.hypot(r.g.x - x, r.g.y - 12 - y) <= SHEEP.radius + 8) return r.id;
+    }
     return this.resourceAt.get(tileKey(Math.floor(x / TILE_SIZE), Math.floor(y / TILE_SIZE))) ?? null;
   }
 
@@ -443,6 +520,7 @@ export class Game {
 
     // Interpolate toward server positions and redraw
     this.effects.clear();
+    this.drawSheep();
     this.drawArrows(t.deltaMS / 1000);
     for (const [id, s] of this.sprites) {
       const dx = s.x - s.g.x;
@@ -480,12 +558,13 @@ export class Game {
     }
     s.sprite.y = spriteBottom(s.type);
     s.sprite.alpha = s.built ? 1 : 0.35 + 0.5 * s.buildProgress;
-    s.sprite.tint = fallen ? 0x555555 : (s.central && !s.owner ? 0xbbbbbb : 0xffffff);
+    s.sprite.tint = fallen ? 0x555555 : (s.central && !s.owner ? 0xbbbbbb : (art.tint ?? 0xffffff));
+    const maxHp = s.maxHp ?? stats.hp;
 
     // Puff of dust the moment construction finishes; flames while badly damaged
     if (s.built && s.wasBuilt === false) this.spawnFx('dust2', s.x, s.y + half - 6, size / 70);
     s.wasBuilt = s.built;
-    const burning = s.built && !fallen && s.hp < stats.hp * LOW_HP_FIRE;
+    const burning = s.built && !fallen && s.hp < maxHp * LOW_HP_FIRE;
     if (burning && !s.fire.visible) s.fire.play();
     else if (!burning) s.fire.stop();
     s.fire.visible = burning;
@@ -511,6 +590,14 @@ export class Game {
         .stroke({ width: 1.5, color: 0x5a4300 });
       if (s.owner) drawBar(g, half + 8, size, s.controlTime / CENTRAL_CONTROL_TIME, color);
     }
+    if (art.logs) {
+      // Stacked logs beside the lumber camp
+      for (const [lx, ly] of [[-6, 0], [6, 0], [0, -7]]) {
+        g.circle(half - 14 + lx, half - 8 + ly, 6).fill(0x8b5a2b).stroke({ width: 1.5, color: 0x4e2f14 });
+        g.circle(half - 14 + lx, half - 8 + ly, 2.5).fill(0xd9b38c);
+      }
+    }
+    if (s.research) drawBar(g, half + 8, size, s.research.progress, 0xb388ff);
     if (s.built && s.queue?.length) {
       drawBar(g, half + 8, size, s.trainProgress, 0x4fc3f7);
       s.queue.forEach((_, i) => g.circle(-half + 5 + i * 9, half + 19, 3).fill(0x4fc3f7));
@@ -518,7 +605,7 @@ export class Game {
     if (stats.attack && s.built && (isSelected || this.hovered?.id === s.id)) {
       this.effects.circle(s.x, s.y, stats.attack.range).stroke({ width: 1, color, alpha: 0.6 });
     }
-    if (s.hp < stats.hp && s.built && !fallen) drawBar(g, top - 2, size, s.hp / stats.hp, 0x4caf50);
+    if (s.hp < maxHp && s.built && !fallen) drawBar(g, top - 2, size, s.hp / maxHp, 0x4caf50);
   }
 
   // Tilled soil on every footprint tile except the farmhouse's; plants disappear as food is harvested
@@ -583,9 +670,58 @@ export class Game {
 
     const g = s.over.clear();
     const barY = -r - 22;
-    if (s.action === 'gathering') drawBar(g, barY, 26, s.gatherFill, { gold: 0xffd34d, food: 0xe57373 }[s.carry?.type] ?? 0x8bc34a);
-    else if (s.action === 'building') drawBar(g, barY, 26, this.sprites.get(s.buildingId)?.buildProgress ?? 0, 0xf0a030);
+    if (s.action === 'gathering') drawBar(g, barY, 26, s.gatherFill, RESOURCE_COLORS[s.carry?.type] ?? RESOURCE_COLORS.wood);
+    if (s.type === 'monk') g.ellipse(0, -r - 13, 7, 2.5).stroke({ width: 2, color: 0xffe082 }); // halo
+    const patient = s.action === 'healing' ? this.sprites.get(s.targetId) : null;
+    if (patient) {
+      const pulse = 0.4 + 0.3 * Math.sin(performance.now() / 120);
+      this.effects.moveTo(s.g.x, s.g.y - 6).lineTo(patient.g.x, patient.g.y - 6).stroke({ width: 2, color: HEAL_COLOR, alpha: pulse });
+      const py = patient.g.y - 30;
+      this.effects.rect(patient.g.x - 5, py - 1.5, 10, 3).rect(patient.g.x - 1.5, py - 5, 3, 10).fill({ color: HEAL_COLOR, alpha: 0.9 });
+    }
+    if (s.action === 'building') drawBar(g, barY, 26, this.sprites.get(s.buildingId)?.buildProgress ?? 0, 0xf0a030);
     if (s.hp < stats.hp) drawBar(g, barY + 7, 24, s.hp / stats.hp, 0x4caf50);
+    this.drawFlag(s);
+  }
+
+  // The flag pole rises behind the bearer; the cloth is the player's drawing in their colour, waving
+  drawFlag(s) {
+    const carrying = this.bearers.has(s.id);
+    if (!carrying) {
+      if (s.flag) s.flag.visible = false;
+      return;
+    }
+    if (!s.flag) {
+      s.flag = new Container();
+      const pole = new Graphics().rect(-1, -FLAG_POLE, 2, FLAG_POLE + 6).fill(0x5d3a1e);
+      const cloth = new Sprite(this.flagTextures.get(s.owner) ?? this.flagTextures.get(null));
+      cloth.width = FLAG_SIZE.width;
+      cloth.height = FLAG_SIZE.height;
+      cloth.position.set(1, -FLAG_POLE);
+      cloth.tint = this.colorOf(s.owner);
+      s.flag.addChild(pole, cloth);
+      s.flag.cloth = cloth;
+      s.g.addChildAt(s.flag, s.g.getChildIndex(s.sprite));
+    }
+    s.flag.visible = true;
+    s.flag.x = -s.facing * 9;
+    s.flag.scale.x = -s.facing; // the cloth streams out behind the bearer
+    s.flag.cloth.skew.y = Math.sin(performance.now() / 260 + s.id) * 0.12;
+  }
+
+  // Sheep walk toward their owner's drop-off; owned sheep get a ring in the owner's colour
+  drawSheep() {
+    for (const r of this.resources.values()) {
+      if (r.variant !== 'sheep') continue;
+      const tx = r.x;
+      const ty = r.y + 12;
+      const dx = tx - r.g.x;
+      r.g.x += dx * 0.3;
+      r.g.y += (ty - r.g.y) * 0.3;
+      r.g.zIndex = r.g.y;
+      if (Math.abs(dx) > 0.3) r.g.scale.x = Math.abs(r.g.scale.x) * Math.sign(dx);
+      if (r.owner) this.effects.ellipse(r.g.x, r.g.y - 2, 13, 5).stroke({ width: 1.5, color: this.colorOf(r.owner), alpha: 0.8 });
+    }
   }
 
   // Arrows from towers and archers fly toward the target's current position
@@ -624,11 +760,11 @@ export class Game {
 
     if (this.placing) {
       const { tx, ty } = this.ghostTile();
-      const valid = canPlace(this.placing, tx, ty, this.isTileBlocked)
+      const valid = canPlace(this.placing, tx, ty, this.isTileBlocked, this.mapTiles)
         && canAfford(this.stock, ENTITY_STATS[this.placing].cost);
       const tint = valid ? 0x4caf50 : 0xe53935;
       for (const [x, y] of footprint(this.placing, tx, ty)) {
-        const blocked = x < 0 || y < 0 || x >= MAP_TILES || y >= MAP_TILES || this.isTileBlocked(x, y);
+        const blocked = x < 0 || y < 0 || x >= this.mapTiles || y >= this.mapTiles || this.isTileBlocked(x, y);
         g.rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
           .fill({ color: blocked ? 0xe53935 : tint, alpha: 0.35 });
       }
@@ -674,12 +810,13 @@ export class Game {
     const mine = [...this.sprites.values()].filter((s) => s.owner === this.myId);
     const villagers = mine.filter((s) => s.type === 'villager');
     const idle = villagers.filter((s) => !s.task).length;
-    const army = mine.filter((s) => !isBuildingType(s.type) && s.type !== 'villager').length;
+    const army = mine.filter((s) => SOLDIERS.has(s.type)).length;
     const popFull = this.pop.used >= this.pop.cap;
     const items = [
       [{ icon: '/assets/ui/food.png', label: 'Comida' }, this.stock.food],
       [{ icon: '/assets/ui/wood.png', label: 'Madera' }, this.stock.wood],
       [{ icon: '/assets/ui/gold.png', label: 'Oro' }, this.stock.gold],
+      ['🪨', this.stock.stone ?? 0],
       ['🏠 Población', `${this.pop.used}/${this.pop.cap}${this.pop.cap >= MAX_POPULATION ? ' (máx.)' : ''}`, popFull],
       ['👷 Aldeanos', `${villagers.length} (${idle} inactivos)`],
       ['⚔️ Ejército', army],
@@ -718,6 +855,7 @@ export class Game {
       btn.dataset.type = type;
       const img = document.createElement('img');
       img.src = `/assets/${this.factionOf(this.myId)}/${BUILDING_ART[type].texture}.png`;
+      if (BUILDING_ART[type].tint) img.style.filter = 'sepia(0.7)';
       img.alt = '';
       const name = document.createElement('strong');
       name.textContent = stats.name;
@@ -726,6 +864,7 @@ export class Game {
       const trains = document.createElement('small');
       if (stats.trains) trains.textContent = `Entrena ${ENTITY_STATS[stats.trains].name}`;
       else if (stats.attack) trains.textContent = `Dispara flechas · alcance ${stats.attack.range}`;
+      else if (stats.dropOff) trains.textContent = 'Deja aquí cualquier recurso · mejora la recolección';
       else if (stats.farm) trains.textContent = `${stats.farm.food} comida por siembra · resembrar: ${formatCost(stats.farm.reseedCost)}`;
       else trains.textContent = `+${stats.population} población`;
       const text = document.createElement('span');
@@ -751,8 +890,15 @@ export class Game {
     if (this.hovered.kind === 'resource') {
       const r = this.resources.get(this.hovered.id);
       if (!r) return null;
-      const label = r.variant === 'bush' ? 'Arbusto' : { wood: 'Árbol', gold: 'Mina de oro', food: 'Oveja' }[r.type];
-      return `${label} — ${r.amount}/${r.max} ${RESOURCE_NAMES[r.type]}`;
+      const label = r.variant === 'bush' ? 'Arbusto' : {
+        wood: 'Árbol', gold: 'Mina de oro', stone: 'Cantera de piedra', food: 'Oveja',
+      }[r.type];
+      const lines = [`${label} — ${r.amount}/${r.max} ${RESOURCE_NAMES[r.type]}`];
+      if (r.variant === 'sheep') {
+        if (!r.owner) lines.push('Acércale una unidad para quedártela');
+        else lines.push(r.owner === this.myId ? 'Tuya: va hacia tu Centro urbano o Aserradero' : `De ${this.players.get(r.owner)?.name ?? 'otro jugador'}`);
+      }
+      return lines.join('\n');
     }
 
     const s = this.sprites.get(this.hovered.id);
@@ -761,7 +907,7 @@ export class Game {
     const owner = this.players.get(s.owner)?.name ?? 'neutral';
     const mine = s.owner === this.myId;
     const name = s.central ? 'Centro urbano central' : stats.name;
-    const lines = [`${name} (${mine ? 'tú' : owner}) — PV ${s.hp}/${stats.hp}`];
+    const lines = [`${name} (${mine ? 'tú' : owner}) — PV ${s.hp}/${s.maxHp ?? stats.hp}`];
 
     if (s.central) {
       if (s.hp <= 0) lines.push('¡Caído! Clic derecho con un aldeano para capturarlo');
@@ -775,6 +921,16 @@ export class Game {
         lines.push(`Dispara a unidades enemigas: ${stats.attack.damage} daño cada ${stats.attack.cooldown}s · alcance ${stats.attack.range}`);
       }
       if (stats.population) lines.push(`+${stats.population} población`);
+      if (stats.dropOff && s.built) {
+        lines.push('Los aldeanos dejan aquí cualquier recurso');
+        const level = this.players.get(s.owner)?.gatherLevel ?? 0;
+        if (s.research) {
+          lines.push(`Investigando ${GATHER_UPGRADES[s.research.level].name}: ${Math.floor(s.research.progress * 100)}%`);
+        } else if (mine && GATHER_UPGRADES[level]) {
+          const up = GATHER_UPGRADES[level];
+          lines.push(`Clic para investigar ${up.name} (recolección x${up.bonus}): ${formatCost(up.cost)} · ${up.time}s`);
+        } else if (mine) lines.push('Todas las mejoras investigadas');
+      }
       if (stats.farm && s.built) {
         lines.push(`Siembra: ${s.food}/${stats.farm.food} comida`);
         if (mine && s.food > 0) lines.push('Clic derecho con aldeanos para cultivar');
@@ -790,6 +946,8 @@ export class Game {
         if (!canAfford(this.stock, unit.cost)) lines.push('Recursos insuficientes');
         if (this.pop.used >= this.pop.cap) lines.push('Población al límite: construye casas');
       }
+    } else if (stats.heal) {
+      lines.push(`Cura ${stats.heal.amount} PV/s a unidades aliadas cercanas${s.action === 'healing' ? ' · curando' : ''}`);
     } else if (s.type !== 'villager') {
       const { attack } = stats;
       lines.push(`Ataque ${attack.damage} · ${attack.range ? `alcance ${attack.range}` : 'cuerpo a cuerpo'}${s.action === 'attacking' ? ' · luchando' : ''}`);
@@ -836,7 +994,7 @@ export class Game {
     const { tx, ty } = this.ghostTile();
     const stats = ENTITY_STATS[this.placing];
     if (!canAfford(this.stock, stats.cost)) return this.showMessage('Recursos insuficientes');
-    if (!canPlace(this.placing, tx, ty, this.isTileBlocked)) return this.showMessage('No se puede construir ahí');
+    if (!canPlace(this.placing, tx, ty, this.isTileBlocked, this.mapTiles)) return this.showMessage('No se puede construir ahí');
     // Selected villagers go build it; the server picks the closest villager when none are selected
     const unitIds = this.selectedUnitIds().filter((id) => this.sprites.get(id).type === 'villager');
     this.socket.emit('game:build', { type: this.placing, tx, ty, unitIds });
@@ -858,6 +1016,14 @@ export class Game {
       return;
     }
     this.selected = new Set([id]);
+    if (ENTITY_STATS[s.type].dropOff && s.built) {
+      if (s.research) return this.showMessage('Ya se está investigando una mejora', 'notice');
+      const up = GATHER_UPGRADES[this.players.get(this.myId)?.gatherLevel ?? 0];
+      if (!up) return this.showMessage('Ya investigaste todas las mejoras', 'notice');
+      if (!canAfford(this.stock, up.cost)) return this.showMessage('Recursos insuficientes');
+      this.socket.emit('game:research', { buildingId: id });
+      return;
+    }
     const farm = ENTITY_STATS[s.type].farm;
     if (farm && s.built && s.food <= 0) {
       if (!canAfford(this.stock, farm.reseedCost)) return this.showMessage('Recursos insuficientes');

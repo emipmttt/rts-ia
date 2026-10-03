@@ -47,6 +47,7 @@ io.on('connection', (socket) => {
   socket.on('game:train', (order) => lobby.roomOf(socket)?.handleTrain(socket.data.playerId, order ?? {}));
   socket.on('game:farm', (order) => lobby.roomOf(socket)?.handleFarm(socket.data.playerId, order ?? {}));
   socket.on('game:reseed', (order) => lobby.roomOf(socket)?.handleReseed(socket.data.playerId, order ?? {}));
+  socket.on('game:research', (order) => lobby.roomOf(socket)?.handleResearch(socket.data.playerId, order ?? {}));
   socket.on('game:attack', (order) => lobby.roomOf(socket)?.handleAttack(socket.data.playerId, order ?? {}));
 
   socket.on('disconnect', () => {

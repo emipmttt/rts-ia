@@ -1,9 +1,7 @@
-import { MAP_TILES, TILE_SIZE } from '../shared/constants.js';
+import { TILE_SIZE } from '../shared/constants.js';
 
-const N = MAP_TILES;
 const SQRT2 = Math.SQRT2;
 const NEIGHBORS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-const tileCenter = (i) => ({ x: ((i % N) + 0.5) * TILE_SIZE, y: (Math.floor(i / N) + 0.5) * TILE_SIZE });
 
 // Minimal binary heap of tile indexes ordered by score
 class Heap {
@@ -53,6 +51,8 @@ class Heap {
  * @returns {{ points: {x, y}[], partial: boolean }}
  */
 export function findPath(blocked, sx, sy, gx, gy, enterGoal = false) {
+  const N = Math.sqrt(blocked.length); // grids are square
+  const tileCenter = (i) => ({ x: ((i % N) + 0.5) * TILE_SIZE, y: (Math.floor(i / N) + 0.5) * TILE_SIZE });
   const start = sy * N + sx;
   const goal = gy * N + gx;
   const h = (i) => Math.hypot((i % N) - gx, Math.floor(i / N) - gy);
@@ -99,6 +99,7 @@ export function findPath(blocked, sx, sy, gx, gy, enterGoal = false) {
 // True when a body of radius r can walk the straight segment without touching a blocked tile
 // (tiles listed in `ignore` don't count, e.g. the tree being walked to)
 export function clearLine(blocked, x0, y0, x1, y1, r, ignore = -1) {
+  const N = Math.sqrt(blocked.length);
   const dist = Math.hypot(x1 - x0, y1 - y0);
   const steps = Math.max(1, Math.ceil(dist / (TILE_SIZE / 4)));
   for (let s = 0; s <= steps; s++) {

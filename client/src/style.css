@@ -74,6 +74,13 @@ button:disabled { filter: grayscale(0.9) brightness(0.8); cursor: default; }
   border-style: solid; border-width: 0 46px; border-image: url('/assets/ui/ribbon_red.png') 0 128 fill / 0 46px / 0 stretch;
 }
 #message.notice { border-image-source: url('/assets/ui/ribbon_blue.png'); }
+/* Flag editor in the lobby: black strokes on a light, see-through-looking pad */
+.flag-editor { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+#flag-canvas {
+  width: 192px; height: 128px; cursor: crosshair; touch-action: none; border: 2px solid #5d3a1e; border-radius: 4px;
+  background: repeating-conic-gradient(#f3ead8 0% 25%, #e6dcc6 0% 50%) 0 0 / 16px 16px;
+}
+
 #build-menu {
   position: absolute; left: 50%; bottom: 4px; transform: translateX(-50%); display: flex; gap: 4px; justify-content: center;
   flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: calc(100vw - 16px); padding: 0 2px;

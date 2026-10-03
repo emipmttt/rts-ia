@@ -1,23 +1,23 @@
-import { MAP_WIDTH, MAP_HEIGHT, SPAWN_MARGIN } from '../shared/constants.js';
+import { SPAWN_MARGIN } from '../shared/constants.js';
 
-const m = SPAWN_MARGIN;
-const W = MAP_WIDTH;
-const H = MAP_HEIGHT;
-
-// Corners first (opposite corners for 2 players), then edge midpoints
-const SPAWN_POINTS = [
-  { x: m, y: m },
-  { x: W - m, y: H - m },
-  { x: W - m, y: m },
-  { x: m, y: H - m },
-  { x: W / 2, y: m },
-  { x: W / 2, y: H - m },
-  { x: m, y: H / 2 },
-  { x: W - m, y: H / 2 },
-];
+// Corners first (opposite corners for 2 players), then edge midpoints, for a square map of side `size` px
+const spawnPoints = (size) => {
+  const m = SPAWN_MARGIN;
+  return [
+    { x: m, y: m },
+    { x: size - m, y: size - m },
+    { x: size - m, y: m },
+    { x: m, y: size - m },
+    { x: size / 2, y: m },
+    { x: size / 2, y: size - m },
+    { x: m, y: size / 2 },
+    { x: size - m, y: size / 2 },
+  ];
+};
 
 // Returns one spawn point per player, in a shuffled player order
-export function assignSpawns(playerIds) {
+export function assignSpawns(playerIds, size) {
+  const points = spawnPoints(size);
   const shuffled = [...playerIds].sort(() => Math.random() - 0.5);
-  return new Map(shuffled.map((id, i) => [id, SPAWN_POINTS[i]]));
+  return new Map(shuffled.map((id, i) => [id, points[i]]));
 }

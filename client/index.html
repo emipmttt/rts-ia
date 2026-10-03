@@ -11,6 +11,11 @@
     <section id="lobby" class="screen panel-paper">
       <h1 class="ribbon-title">Tiny Swords RTS</h1>
       <label>Tu nombre <input id="player-name" maxlength="20" /></label>
+      <div class="flag-editor">
+        <span>Dibuja tu bandera <small class="muted">(se pinta con tu color al jugar)</small></span>
+        <canvas id="flag-canvas" width="96" height="64"></canvas>
+        <button type="button" id="flag-clear" class="red">Borrar</button>
+      </div>
       <form id="create-form" class="row">
         <input id="room-name" maxlength="30" placeholder="Nombre de la sala" />
         <button type="submit">Crear sala</button>
