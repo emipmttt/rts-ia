@@ -1,34 +1,32 @@
 import {
   AnimatedSprite, Application, BlurFilter, Container, Graphics, Rectangle, Sprite, Texture, TilingSprite,
 } from 'pixi.js';
-import { loadAssets } from './assets.js';
+import { AUTUMN_TINTS, loadAssets } from './assets.js';
 import { play } from './audio.js';
+import { HAIR_STYLES, RIG_NAMES } from './pixelRig.js';
+import { TerritoryMap } from './territory.js';
 import {
-  ENTITY_STATS, TILE_SIZE, Terrain, ResourceType, RESOURCE_NAMES, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
+  ENTITY_STATS, unitStats, TILE_SIZE, Terrain, ResourceType, RESOURCE_NAMES, MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME,
   MAX_POPULATION, GATHER_UPGRADES, SHEEP,
 } from '../../shared/constants.js';
 import {
   isBuildingType, buildingSize, tileForCenter, footprint, canPlace, canAfford, formatCost,
 } from '../../shared/rules.js';
 
-const SAND_COLOR = 0xd8c08a;
-const SAND_LIGHT = 0xe6d3a3;
-const WATER_BANK = 0x2f6f9f;
-const WATER_COLOR = 0x3f8fc9;
-const WATER_LIGHT = 0x6fb6e4;
+const WATER_FRAME_MS = 500; // water tile animation: 2 frames
 const BRIDGE_COLOR = 0x9a6a3a;
 const BRIDGE_DARK = 0x5d3a1e;
 const ZOOM_MIN = 0.6;
-const ZOOM_MAX = 1.8;
+const ZOOM_MAX = 4;
 const NEUTRAL_FACTION = 'black'; // castle art used for the unclaimed central town center
 
 // Sprite sheet prefix and scale per unit type (frames are 192px, lancer 320px)
 const UNIT_ART = {
-  villager: { sheet: 'pawn', scale: 0.32 },
-  swordsman: { sheet: 'warrior', scale: 0.36 },
-  archer: { sheet: 'archer', scale: 0.34 },
-  horseman: { sheet: 'lancer', scale: 0.26 },
-  monk: { sheet: 'pawn', scale: 0.32 }, // a pawn with a halo
+  villager: { sheet: 'villager', scale: 2.2, rig: true }, // procedural pixel rigs (pixelRig.js), 24px frames
+  swordsman: { sheet: 'warrior', scale: 2.2, rig: true },
+  archer: { sheet: 'air', scale: 2.2, rig: true }, // air warrior with two fans
+  horseman: { sheet: 'flyer', scale: 2.2, rig: true }, // flies in a spread poncho
+  monk: { sheet: 'monk', scale: 2.2, rig: true }, // bald, robe and tall staff
   guard: { sheet: 'lancer', scale: 0.3 },
 };
 // Units that fight in the army; one in every FLAG_EVERY of them carries the player's flag
@@ -40,6 +38,24 @@ const RESOURCE_COLORS = {
   gold: 0xffd34d, food: 0xe57373, wood: 0x8bc34a, stone: 0xb0b0b0,
 };
 const HEAL_COLOR = 0x7dff7a;
+const WIND_COLORS = [0xffffff, 0xc9d3dc, 0x8fd0ff, 0xe8f6ff];
+// Flyer (horseman type): cruising altitude, apex of the attack dive, takeoff crouch/launch timing (s)
+const FLY_ALT = 44;
+const DIVE_ALT = 70;
+const TAKEOFF_CROUCH = 0.22;
+const TAKEOFF_TIME = 0.4;
+// Fire: flame colours from hot to cool, then smoke; embers age through EMBER_COLORS
+const FIRE_COLORS = [0xfff3b0, 0xffd34d, 0xff8a2a, 0xe0401f];
+const EMBER_COLORS = [0xffd34d, 0xff8a2a, 0xe0401f, 0x6b5a50, 0x4a4440];
+// Juice particle palettes
+const WOOD_CHIPS = [0x8b5a2b, 0xc89b62, 0x6b4423];
+const STONE_SPARKS = [0xfff3b0, 0xffffff, 0xb8c0c8, 0x7a828a];
+const DUST = [0xd8c08a, 0xbfa678, 0x9c8660];
+const MEAT_BITS = [0xd9534f, 0xb3261e, 0xffffff];
+const HIT_SPARKS = [0xffffff, 0xfff3b0, 0xb3261e];
+const SWOOSH = [0xffffff, 0xe8f6ff, 0xc9d3dc];
+const HIT_FLASH_MS = 110;
+const STUN_COLORS = [0xfff176, 0xffffff, 0x8fd0ff];
 // Right-click markers: colour per order, lifetime in seconds
 const MARKER_COLORS = {
   move: 0x7dff7a, attack: 0xff5252, gather: 0xffd34d, build: 0xffa040,
@@ -72,6 +88,35 @@ const ANIM_GROUP = {
 const LOW_HP_FIRE = 0.5; // buildings below this fraction of hp burn
 const HOVER_COLOR = 0xffffff;
 const SELECT_COLOR = 0x00ff00;
+// Pixel-art selection rings ('#' = drawn in the selection/hover colour): units 16x6, buildings 32x9
+const UNIT_RING = [
+  '...##########...',
+  '.##..........##.',
+  '#..............#',
+  '#..............#',
+  '.##..........##.',
+  '...##########...',
+];
+const BUILDING_RING = [
+  '........################........',
+  '....####................####....',
+  '..##........................##..',
+  '##............................##',
+  '#..............................#',
+  '##............................##',
+  '..##........................##..',
+  '....####................####....',
+  '........################........',
+];
+// Draws a ring centred on (cx, cy) with art pixels of size px
+function drawRing(g, cx, cy, px, color, art = UNIT_RING) {
+  const x0 = cx - (art[0].length * px) / 2;
+  const y0 = cy - (art.length * px) / 2;
+  art.forEach((row, y) => [...row].forEach((c, x) => {
+    if (c === '#') g.rect(x0 + x * px, y0 + y * px, px, px);
+  }));
+  g.fill(color);
+}
 const CLICK_THRESHOLD = 5; // px of pointer movement before a click becomes a drag-select
 const DOUBLE_CLICK_MS = 350;
 const BUILDABLE = Object.keys(ENTITY_STATS).filter(isBuildingType);
@@ -122,6 +167,10 @@ export class Game {
     this.hovered = null; // { kind: 'entity' | 'resource', id }
     this.placing = null; // building type being placed
     this.arrows = []; // in-flight arrow animations
+    this.gusts = []; // in-flight air blasts from air warriors
+    this.windBits = []; // loose wind pixels: gust trails and impact bursts
+    this.shockwaves = []; // expanding pixel rings from flyer takeoffs and impacts
+    this.fireballs = []; // in-flight fireballs from fire mages
     this.markers = []; // right-click order bursts { x, y, color, t }
     this.groups = new Map(); // digit -> unit ids (Ctrl/Cmd + digit assigns, digit selects)
     this.lastGroupKey = null; // { digit, time } to centre the camera on a double press
@@ -148,6 +197,11 @@ export class Game {
     this.tiles = map.tiles;
     this.mapTiles = Math.sqrt(map.tiles.length);
     this.world.addChild(this.drawGround(map));
+    this.territory = new TerritoryMap(this.mount, map.tiles, this.mapTiles, (x, y) => {
+      const k = this.world.scale.x;
+      this.world.position.set(this.app.screen.width / 2 - x * k, this.app.screen.height / 2 - y * k);
+      this.clampCamera();
+    });
     this.fieldsLayer = new Container(); // farm crop fields, on the ground under everything else
     this.world.addChild(this.fieldsLayer);
     // Units, buildings and trees share one layer sorted by their base y, so things lower on screen draw in front
@@ -174,13 +228,13 @@ export class Game {
 
   // ---------- World ----------
 
-  // Sand and water are drawn as overlapping blobs and blurred, so they fade into the grass instead of
+  // Sand and water (masked tiles) are drawn as overlapping blobs and blurred, so they fade into the grass instead of
   // showing hard tile edges. The blur is rendered once into a texture covering the whole map (a live
   // filter or cacheAsTexture only blurs what is on screen at the time).
   drawGround(map) {
     const ground = new Container();
     const grass = new TilingSprite({ texture: this.assets.grass, width: map.width, height: map.height });
-    grass.tileScale.set(TILE_SIZE / 64);
+    grass.tileScale.set(TILE_SIZE / this.assets.grass.width);
 
     const tileAt = (tx, ty) => map.tiles[ty * this.mapTiles + tx];
     const is = (terrain) => (tx, ty) => tileAt(tx, ty) === terrain;
@@ -203,21 +257,34 @@ export class Game {
       core.fill({ color: coreColor, alpha: coreAlpha });
       return [base, core];
     };
-    const soft = new Container();
-    soft.addChild(
-      ...blobs(is(Terrain.SAND), 0.85, SAND_COLOR, SAND_LIGHT, 0.7),
-      ...blobs(isWater, 0.95, WATER_BANK, WATER_COLOR, 1),
-      ...blobs(isWater, 0.6, WATER_COLOR, WATER_LIGHT, 0.5),
-    );
-    soft.filters = [new BlurFilter({ strength: 10, quality: 4 })];
-    // Rendered at 1x: a 2x texture of the whole map would exceed the max GPU texture size
-    const texture = this.app.renderer.generateTexture({
-      target: soft, frame: new Rectangle(0, 0, map.width, map.height), resolution: 1,
-    });
-    soft.destroy({ children: true });
+    // Renders a blurred layer into one texture covering the whole map
+    // (at 1x: a 2x texture of the whole map would exceed the max GPU texture size)
+    const bake = (layer) => {
+      layer.filters = [new BlurFilter({ strength: 10, quality: 4 })];
+      const texture = this.app.renderer.generateTexture({
+        target: layer, frame: new Rectangle(0, 0, map.width, map.height), resolution: 1,
+      });
+      layer.destroy({ children: true });
+      return texture;
+    };
+    // Sand and water are pixel-art tiles, each cut out by a soft white blob mask
+    // `areas`: [match, blob radius in tiles] pairs that make up the mask
+    const tiled = (texture, areas) => {
+      const shape = new Container();
+      for (const [match, radius] of areas) shape.addChild(...blobs(match, radius, 0xffffff, 0xffffff, 0));
+      const mask = new Sprite(bake(shape));
+      const tiles = new TilingSprite({ texture, width: map.width, height: map.height });
+      tiles.tileScale.set(TILE_SIZE / texture.width);
+      tiles.mask = mask;
+      return [tiles, mask];
+    };
+    // Rivers get a sandy shore: wider sand blobs under every water tile
+    const [sand, sandMask] = tiled(this.assets.sand, [[is(Terrain.SAND), 0.85], [isWater, 1.6]]);
+    const [water, waterMask] = tiled(this.assets.water[0], [[isWater, 0.95]]);
+    this.water = water; // its texture flips between the animation frames in update()
 
     const border = new Graphics().rect(0, 0, map.width, map.height).stroke({ width: 4, color: 0x222222 });
-    ground.addChild(grass, new Sprite(texture), this.drawBridges(map, is(Terrain.BRIDGE), isWater), border);
+    ground.addChild(grass, sand, sandMask, water, waterMask, this.drawBridges(map, is(Terrain.BRIDGE), isWater), border);
     return ground;
   }
 
@@ -271,15 +338,29 @@ export class Game {
       g.anchor.set(0.5, 0.8);
       g.scale.set(0.8);
     } else if (r.type === ResourceType.WOOD) {
-      g = animated(this.assets.trees[r.id % this.assets.trees.length], 0.1);
-      g.anchor.set(0.5, 0.92);
-      g.scale.set(0.3);
+      // Pixel-art pine or oak, one tile wide (16px art -> 40px), mirrored on some for variety
+      // Foliage colour: mostly green variants, about 1 in 8 trees autumn orange
+      const variants = this.assets.trees[r.id % this.assets.trees.length];
+      const roll = ((Math.sin(r.id * 3.7) * 9631.17) % 1 + 1) % 1;
+      const greens = variants.length - AUTUMN_TINTS;
+      const tint = roll < 0.12 ? greens + Math.floor((roll / 0.12) * AUTUMN_TINTS) : Math.floor(((roll - 0.12) / 0.88) * greens);
+      g = new Sprite(variants[tint]);
+      g.anchor.set(0.5, 1);
+      const k = TILE_SIZE / 16;
+      g.scale.set(Math.floor(r.id / 2) % 2 ? -k : k, k);
     } else {
       g = new Sprite(this.assets.gold[r.id % this.assets.gold.length]);
       g.anchor.set(0.5, 0.75);
       g.scale.set(0.42);
     }
     g.position.set((r.tx + 0.5) * TILE_SIZE, (r.ty + 1) * TILE_SIZE);
+    if (r.type === ResourceType.WOOD && r.variant !== 'bush') {
+      // Trees sit at a different spot inside their tile (stable per tree), snapped to the art's pixel grid
+      const px = TILE_SIZE / 16;
+      const hash = (n) => ((Math.sin(r.id * 12.9898 + n * 78.233) * 43758.5453) % 1 + 1) % 1;
+      g.x += Math.round((hash(1) - 0.5) * 6) * px; // up to +-3 art px sideways
+      g.y += Math.round((hash(2) - 0.7) * 5) * px; // mostly up into the tile, a little down
+    }
     g.zIndex = g.y;
     this.objects.addChild(g);
     this.resources.set(r.id, {
@@ -346,6 +427,7 @@ export class Game {
         if (this.stateSeen && e.owner === this.myId && !isBuildingType(e.type)) this.sfx('trained', e.x, e.y);
       } else if (e.hp < s.hp) {
         this.sfx(isBuildingType(e.type) ? 'hit' : 'sword', e.x, e.y);
+        this.onHit(s, isBuildingType(e.type));
       }
       Object.assign(s, e);
     }
@@ -354,7 +436,13 @@ export class Game {
       if (seen.has(id)) continue;
       // Buildings blow up, units leave a puff of dust
       if (isBuildingType(s.type)) this.spawnFx(s.id % 2 ? 'explosion1' : 'explosion2', s.x, s.y, buildingSize(s.type) / 120);
-      else this.spawnFx('dust1', s.g.x, s.g.y, 0.7);
+      else {
+        this.spawnFx('dust1', s.g.x, s.g.y, 0.7);
+        // The unit bursts into pixels of its team colour, skin and blood
+        this.burst(s.g.x, s.g.y - 8, {
+          n: 26, colors: [this.colorOf(s.owner), 0xebcaa6, 0xb3261e, 0x2c2c2c], speed: 110, up: 60, life: 0.6, g: 260,
+        });
+      }
       this.sfx(isBuildingType(s.type) ? 'collapse' : 'death', s.x, s.y);
       s.g.destroy({ children: true });
       s.fields?.destroy();
@@ -382,8 +470,9 @@ export class Game {
       fire.animationSpeed = 0.2;
       fire.visible = false;
     } else {
-      sprite = new AnimatedSprite(this.unitFrames(e.type, e.owner, 'idle'));
-      sprite.anchor.set(0.5, 0.55);
+      sprite = new AnimatedSprite(this.unitFrames(e.type, e.owner, 'idle', 'front', e.id));
+      // Rig frames have headroom for raised tools, so their anchor sits lower to keep the feet in place
+      sprite.anchor.set(0.5, UNIT_ART[e.type].rig ? 0.62 : 0.55);
       sprite.play();
     }
     g.addChild(under, sprite);
@@ -396,14 +485,34 @@ export class Game {
       this.fieldsLayer.addChild(fields);
     }
     return {
-      g, under, over, sprite, fire, fields, anim: 'idle', facing: 1,
+      g, under, over, sprite, fire, fields, anim: 'idle', facing: 1, view: 'front',
     };
   }
 
   factionOf(owner) { return this.players.get(owner)?.faction ?? NEUTRAL_FACTION; }
 
-  unitFrames(type, owner, anim) {
-    return this.assets.units[this.factionOf(owner)][`${UNIT_ART[type].sheet}_${anim}`];
+  // Rigged units alternate between hair styles by id and have a sheet per view
+  // Fire civilization players use the `_fire` rig of a unit when one exists
+  unitFrames(type, owner, anim, view = 'front', id = 0) {
+    const { sheet: base, rig } = UNIT_ART[type];
+    const civ = this.players.get(owner)?.civ;
+    const sheet = rig && civ && civ !== 'air' && RIG_NAMES.includes(`${base}_${civ}`) ? `${base}_${civ}` : base;
+    const name = rig ? `${sheet}_${HAIR_STYLES[id % HAIR_STYLES.length]}_${view}` : sheet;
+    return this.assets.units[this.factionOf(owner)][`${name}_${anim}`];
+  }
+
+  // Rigged units are drawn from the front, back or side: toward whatever they work on, otherwise
+  // along their movement (the side view is mirrored by `facing`)
+  updateView(s, dx, dy) {
+    const target = this.sprites.get(s.targetId ?? s.buildingId) ?? this.resources.get(s.resourceId);
+    if (target && s.action !== 'moving') {
+      const tx = target.x ?? target.g.x;
+      const ty = target.y ?? target.g.y;
+      dx = tx - s.g.x;
+      dy = ty - s.g.y;
+      if (Math.abs(dx) > 1) s.facing = Math.sign(dx);
+    } else if (Math.hypot(dx, dy) < 0.3) return;
+    s.view = Math.abs(dx) >= Math.abs(dy) * 0.8 ? 'side' : dy < 0 ? 'back' : 'front';
   }
 
   // Picks the sheet that matches what the unit is doing this tick
@@ -418,6 +527,7 @@ export class Game {
       }
       return 'idle';
     }
+    if (s.type === 'monk' && s.action === 'healing') return 'heal';
     if (s.action === 'attacking') return s.type === 'archer' ? 'shoot' : 'attack';
     return s.action === 'moving' ? 'run' : 'idle';
   }
@@ -534,20 +644,44 @@ export class Game {
     if (k.has('w') || k.has('arrowup')) this.world.y += speed;
     if (k.has('s') || k.has('arrowdown')) this.world.y -= speed;
     this.clampCamera();
+    // Camera shake from nearby flyer impacts
+    if (this.shake > 0) {
+      this.shake -= t.deltaMS / 1000;
+      const m = Math.max(0, this.shake) * 18;
+      this.world.pivot.set((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+    } else this.world.pivot.set(0, 0);
 
     // Interpolate toward server positions and redraw
     this.effects.clear();
     this.drawSheep();
     this.drawArrows(t.deltaMS / 1000);
+    if (this.water) this.water.texture = this.assets.water[Math.floor(performance.now() / WATER_FRAME_MS) % 2];
+    this.drawGusts(t.deltaMS / 1000);
+    this.drawFireballs(t.deltaMS / 1000);
     this.drawMarkers(t.deltaMS / 1000);
     for (const [id, s] of this.sprites) {
       const dx = s.x - s.g.x;
       s.g.x += dx * 0.3;
       s.g.y += (s.y - s.g.y) * 0.3;
       if (Math.abs(dx) > 0.3) s.facing = Math.sign(dx);
+      if (UNIT_ART[s.type]?.rig) this.updateView(s, dx, s.y - s.g.y);
       if (isBuildingType(s.type)) this.drawBuilding(s, this.selected.has(id));
       else this.drawUnit(s, this.selected.has(id));
+      if (s.burning) this.drawBurning(s);
+      if (s.type === 'archer' && this.players.get(s.owner)?.civ === 'fire') this.mageFire(s);
     }
+
+    // Territory minimap: units and buildings, plus the camera's view rectangle
+    const zoom = this.world.scale.x;
+    this.territory?.update(
+      [...this.sprites.values()].map((s) => ({
+        owner: s.owner, x: s.g.x, y: s.g.y, building: isBuildingType(s.type),
+      })),
+      (owner) => this.colorOf(owner),
+      {
+        x: -this.world.x / zoom, y: -this.world.y / zoom, w: this.app.screen.width / zoom, h: this.app.screen.height / zoom,
+      },
+    );
 
     // Hover is recomputed every frame since things move under a still cursor
     const p = this.world.toLocal(this.pointer);
@@ -595,7 +729,7 @@ export class Game {
     }
 
     const under = s.under.clear();
-    if (isSelected) under.ellipse(0, half - 4, half + 8, half / 2.5).stroke({ width: 2, color: SELECT_COLOR });
+    if (isSelected) drawRing(under, 0, half - 4, (half + 8) / 16, SELECT_COLOR, BUILDING_RING);
 
     const g = s.over.clear();
     const top = spriteBottom(s.type) - s.sprite.height;
@@ -627,6 +761,7 @@ export class Game {
       this.effects.circle(s.x, s.y, stats.attack.range).stroke({ width: 1, color, alpha: 0.6 });
     }
     if (s.hp < maxHp && s.built && !fallen) drawBar(g, top - 2, size, s.hp / maxHp, 0x4caf50);
+    this.drawFlag(s);
   }
 
   // Tilled soil on every footprint tile except the farmhouse's; plants disappear as food is harvested
@@ -663,21 +798,50 @@ export class Game {
     const r = stats.radius;
     s.g.zIndex = s.g.y + r;
 
+    if (s.type === 'horseman') this.updateFlyer(s);
     // Swap animation when the action changes
-    const anim = this.unitAnim(s);
-    if (anim !== s.anim) {
+    const anim = s.type === 'horseman' ? s.flyAnim : this.unitAnim(s);
+    if (anim !== s.anim || s.view !== s.shownView) {
+      const keepFrame = anim === s.anim; // turning mid-animation keeps its rhythm
       s.anim = anim;
-      const frames = this.unitFrames(s.type, s.owner, anim);
+      s.shownView = s.view;
+      const frame = s.sprite.currentFrame;
+      const frames = this.unitFrames(s.type, s.owner, anim, s.view, s.id);
       s.sprite.textures = frames;
       const group = ANIM_GROUP[anim] ?? 'work';
-      const cycle = group === 'attack' ? stats.attack.cooldown : ANIM_CYCLE[group];
+      const attack = unitStats(s.type, this.players.get(s.owner)?.civ).attack;
+      const cycle = group === 'attack' ? attack.cooldown : ANIM_CYCLE[group];
       // animationSpeed is frames per 60fps tick
       s.sprite.animationSpeed = frames.length / (cycle * 60);
-      s.sprite.play();
+      if (keepFrame) s.sprite.gotoAndPlay(frame % frames.length);
+      else s.sprite.play();
     }
-    // Galloping horses kick up dust
-    if (s.type === 'horseman' && s.action === 'moving' && Math.random() < 0.04) {
-      this.spawnFx('dust1', s.g.x - s.facing * 10, s.g.y + r, 0.35);
+    // Stepped animations (flyer takeoff/attack) follow the game's timing instead of playing
+    if (s.flyFrame != null) s.sprite.gotoAndStop(Math.min(s.flyFrame, s.sprite.totalFrames - 1));
+    else if (!s.sprite.playing) s.sprite.play();
+    if (s.action === 'stunned') this.drawStun(s, r);
+    // Frame events (impact particles) and footstep dust
+    const frameNow = s.sprite.currentFrame;
+    if (frameNow !== s.lastFrame) {
+      s.lastFrame = frameNow;
+      this.frameEvent(s, s.anim, frameNow);
+      const walking = s.anim?.startsWith('run') && s.type !== 'horseman';
+      if (walking && frameNow % 2 === 0 && Math.random() < 0.6) {
+        this.burst(s.g.x - s.facing * 4, s.g.y + r * 0.8, { n: 2, colors: DUST, speed: 25, up: 15, g: 60, life: 0.35 });
+      }
+    }
+    // Hit flash (burning units flicker orange from drawBurning, which runs after this)
+    if (s.hitAt && performance.now() - s.hitAt < HIT_FLASH_MS) s.sprite.tint = 0xff6b6b;
+    else if (s.sprite.tint !== 0xffffff) s.sprite.tint = 0xffffff;
+    // Flyers leave a trail of wind pixels (fire: embers cooling to smoke) behind them in the air
+    if (s.type === 'horseman' && s.alt > 8 && Math.random() < 0.7) {
+      const fire = this.isFire(s.owner);
+      this.windBits.push({
+        x: s.g.x - s.facing * 8 + (Math.random() - 0.5) * 18, y: s.g.y - s.alt + 4 + (Math.random() - 0.5) * 10,
+        vx: -s.facing * (20 + Math.random() * 20), vy: fire ? -10 : 15 + Math.random() * 15,
+        life: 0.5, max: 0.5, color: WIND_COLORS[Math.floor(Math.random() * WIND_COLORS.length)],
+        ...(fire ? { colors: EMBER_COLORS, g: -40 } : {}),
+      });
     }
     // Face the target while attacking, otherwise the movement direction
     const target = s.action === 'attacking' ? this.sprites.get(s.targetId) : null;
@@ -686,13 +850,14 @@ export class Game {
     s.sprite.scale.set(scale * s.facing, scale);
 
     const under = s.under.clear();
-    under.ellipse(0, r * 0.9, r + 2, r * 0.45).fill({ color: 0x000000, alpha: 0.25 });
-    if (isSelected) under.ellipse(0, r * 0.9, r + 5, r * 0.6).stroke({ width: 2, color: SELECT_COLOR });
+    // The shadow stays on the ground and shrinks as a flyer climbs
+    const shrink = 1 - Math.min(0.5, (s.alt ?? 0) / 140);
+    under.ellipse(0, r * 0.9, (r + 2) * shrink, r * 0.45 * shrink).fill({ color: 0x000000, alpha: 0.25 });
+    if (isSelected) drawRing(under, 0, r * 0.9, (r + 5) / 8, SELECT_COLOR);
 
     const g = s.over.clear();
     const barY = -r - 22;
     if (s.action === 'gathering') drawBar(g, barY, 26, s.gatherFill, RESOURCE_COLORS[s.carry?.type] ?? RESOURCE_COLORS.wood);
-    if (s.type === 'monk') g.ellipse(0, -r - 13, 7, 2.5).stroke({ width: 2, color: 0xffe082 }); // halo
     const patient = s.action === 'healing' ? this.sprites.get(s.targetId) : null;
     if (patient) {
       const pulse = 0.4 + 0.3 * Math.sin(performance.now() / 120);
@@ -731,12 +896,19 @@ export class Game {
     this.sfx(sound, s.g.x, s.g.y);
   }
 
-  // The flag pole rises behind the bearer; the cloth is the player's drawing in their colour, waving
+  // The flag pole rises behind the bearer (or from the roof of a finished building); the cloth is
+  // the player's drawing in their colour, waving
   drawFlag(s) {
-    const carrying = this.bearers.has(s.id);
+    const building = isBuildingType(s.type);
+    const carrying = building ? !!s.owner && s.built && s.hp > 0 : this.bearers.has(s.id);
     if (!carrying) {
       if (s.flag) s.flag.visible = false;
       return;
+    }
+    // A captured building changes hands: rebuild the flag in the new owner's colours
+    if (s.flag && s.flag.owner !== s.owner) {
+      s.flag.destroy({ children: true });
+      s.flag = null;
     }
     if (!s.flag) {
       s.flag = new Container();
@@ -759,9 +931,20 @@ export class Game {
       }
       s.flag.addChild(pole, cloth);
       s.flag.cloth = cloth;
-      s.g.addChildAt(s.flag, s.g.getChildIndex(s.sprite));
+      s.flag.owner = s.owner;
+      // Behind a unit's body; in front of a building, planted on its roof
+      if (building) s.g.addChildAt(s.flag, s.g.getChildIndex(s.sprite) + 1);
+      else s.g.addChildAt(s.flag, s.g.getChildIndex(s.sprite));
     }
     s.flag.visible = true;
+    if (building) {
+      // Pole planted a little below the top of the art, toward its right side
+      const half = buildingSize(s.type) / 2;
+      const top = spriteBottom(s.type) - s.sprite.height;
+      s.flag.position.set(half * 0.45, top + s.sprite.height * 0.3);
+      s.flag.cloth.skew.y = Math.sin(performance.now() / 260 + s.id) * 0.12;
+      return;
+    }
     s.flag.x = -s.facing * 9;
     s.flag.scale.x = -s.facing; // the cloth streams out behind the bearer
     s.flag.cloth.skew.y = Math.sin(performance.now() / 260 + s.id) * 0.12;
@@ -782,14 +965,445 @@ export class Game {
     }
   }
 
-  // Arrows from towers and archers fly toward the target's current position
+  // Arrows from towers and air blasts from air warriors fly toward the target's current position
   addShots(shots) {
-    for (const { x, y, targetId } of shots) {
+    for (const {
+      x, y, targetId, kind, radius, attackerId, fire,
+    } of shots) {
+      if (kind === 'blast') { this.windBlast(x, y, radius, attackerId, fire); continue; }
       const target = this.sprites.get(targetId);
       if (!target) continue;
       this.sfx('bow', x, y);
-      this.arrows.push({ x, y, targetId, to: { x: target.g.x, y: target.g.y }, t: 0 });
+      const shot = { x, y, targetId, to: { x: target.g.x, y: target.g.y }, t: 0 };
+      if (kind === 'archer') this.gusts.push({ ...shot, spin: Math.random() * Math.PI * 2 });
+      else if (kind === 'fireball') {
+        this.fireballs.push(shot);
+        this.mageRelease(this.sprites.get(attackerId));
+      }
+      else this.arrows.push(shot);
     }
+  }
+
+  // Scatters `n` loose pixels from (x, y): `speed` outward, `up` extra upward kick, `g` gravity
+  // (positive falls, negative rises), optional `dir` (radians) + `spread` to aim them in a cone
+  burst(x, y, {
+    n = 10, colors, speed = 80, up = 0, life = 0.4, g = 0, dir = null, spread = Math.PI * 2,
+  }) {
+    for (let i = 0; i < n; i++) {
+      const a = dir == null ? Math.random() * Math.PI * 2 : dir + (Math.random() - 0.5) * spread;
+      const v = speed * (0.4 + Math.random() * 0.8);
+      this.windBits.push({
+        x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.7 - up * Math.random(), g,
+        life: life * (0.7 + Math.random() * 0.5), max: life, color: colors[i % colors.length],
+      });
+    }
+  }
+
+  // Taking damage: a short red flash on the sprite and sparks off the body
+  onHit(s, building) {
+    s.hitAt = performance.now();
+    if (building) {
+      const half = buildingSize(s.type) / 2;
+      this.burst(s.x + (Math.random() - 0.5) * half, s.y, { n: 8, colors: DUST, speed: 70, up: 50, g: 200, life: 0.5 });
+      return;
+    }
+    this.burst(s.g.x, s.g.y - 8 + s.sprite.y, { n: 7, colors: HIT_SPARKS, speed: 90, up: 30, g: 150, life: 0.3 });
+  }
+
+  // Animation events: particles fired on the frame where a tool or weapon lands
+  frameEvent(s, anim, frame) {
+    const f = s.facing;
+    const reach = s.view === 'side' ? 14 : 8; // tools reach further out in the side view
+    const hx = s.g.x + f * reach;
+    const hy = s.g.y - 2;
+    const civFire = this.isFire(s.owner);
+    if (s.type === 'villager') {
+      if (anim === 'axe' && frame === 3) {
+        // Chips fly back off the trunk toward the villager
+        this.burst(hx, hy - 4, { n: 8, colors: WOOD_CHIPS, speed: 90, up: 60, g: 260, life: 0.5, dir: f > 0 ? Math.PI : 0, spread: 2.4 });
+      } else if (anim === 'pickaxe' && frame === 3) {
+        this.burst(hx, hy, { n: 6, colors: STONE_SPARKS, speed: 120, up: 40, g: 200, life: 0.3 });
+        this.burst(hx, hy + 4, { n: 4, colors: DUST, speed: 40, up: 20, g: 100, life: 0.5 });
+      } else if (anim === 'hammer' && frame === 3) {
+        this.burst(hx, hy + 6, { n: 6, colors: DUST, speed: 50, up: 30, g: 120, life: 0.45 });
+        this.burst(hx, hy, { n: 2, colors: STONE_SPARKS, speed: 80, up: 40, g: 200, life: 0.25 });
+      } else if (anim === 'knife' && frame === 1) {
+        this.burst(hx, hy, { n: 5, colors: MEAT_BITS, speed: 60, up: 40, g: 240, life: 0.4 });
+      }
+      return;
+    }
+    // Melee swings leave a swoosh: a half-ring of pixels in front of the fighter that drifts forward
+    const swoosh = (r) => {
+      for (let i = 0; i < 7; i++) {
+        const a = -Math.PI / 2 + (i / 6) * Math.PI;
+        this.windBits.push({
+          x: s.g.x + f * Math.cos(a) * r, y: s.g.y - 6 + Math.sin(a) * r * 0.8,
+          vx: f * 25, vy: 0, life: 0.16 + i * 0.015, max: 0.26, color: SWOOSH[i % SWOOSH.length],
+        });
+      }
+    };
+    if (s.type === 'swordsman' && anim === 'attack') {
+      if (civFire && (frame === 1 || frame === 2)) swoosh(14);
+      else if (civFire && frame === 4) { swoosh(16); swoosh(11); }
+      else if (!civFire && frame === 3) {
+        swoosh(16);
+        this.burst(hx + f * 6, hy, { n: 5, colors: DUST, speed: 50, up: 20, g: 120, life: 0.35 });
+      }
+    } else if (s.type === 'archer' && anim === 'shoot' && !civFire && frame === 3) {
+      // Fans flung forward: a puff of air off both of them
+      this.burst(hx, hy - 4, { n: 10, colors: WIND_COLORS, speed: 110, life: 0.35, dir: f > 0 ? 0 : Math.PI, spread: 1.2 });
+    } else if (s.type === 'monk' && anim === 'heal' && frame === 2) {
+      this.burst(s.g.x + f * 6, s.g.y - 30, { n: 6, colors: [0x7dff7a, 0xfff59d], speed: 30, up: 30, g: -40, life: 0.6 });
+    }
+  }
+
+  // Flyer altitude and animation. Moving = takeoff (crouch, aura, launch) then flight at FLY_ALT;
+  // attacking = rise to DIVE_ALT over the cooldown and dive so it lands exactly on each impact;
+  // otherwise it glides back down. Sets s.alt, s.flyAnim and s.flyFrame (null = play normally).
+  updateFlyer(s) {
+    const now = performance.now();
+    const flying = s.action === 'moving';
+    s.alt ??= 0;
+    if (flying && !s.wasFlying && s.alt < 4) {
+      s.takeoffAt = now;
+      s.launched = false;
+    }
+    s.wasFlying = flying;
+    const sinceTakeoff = s.takeoffAt ? (now - s.takeoffAt) / 1000 : Infinity;
+    s.flyFrame = null;
+
+    if (s.action === 'attacking') {
+      const cooldown = unitStats('horseman', this.players.get(s.owner)?.civ).attack.cooldown;
+      const p = s.lastBlast ? Math.min(1, (now - s.lastBlast) / (cooldown * 1000)) : 0.9;
+      s.flyAnim = 'attack';
+      if (p < 0.15) { s.alt = 0; s.flyFrame = 0; } // impact crouch
+      else if (p < 0.8) { // climb, easing out toward the apex
+        const q = (p - 0.15) / 0.65;
+        s.alt = DIVE_ALT * (1 - (1 - q) ** 2);
+        s.flyFrame = q < 0.45 ? 1 : q < 0.75 ? 2 : 3;
+      } else { // accelerating dive
+        const q = (p - 0.8) / 0.2;
+        s.alt = DIVE_ALT * (1 - q * q);
+        s.flyFrame = 4;
+      }
+    } else if (sinceTakeoff < TAKEOFF_TIME) {
+      s.flyAnim = 'takeoff';
+      if (sinceTakeoff < TAKEOFF_CROUCH) {
+        s.flyFrame = sinceTakeoff < TAKEOFF_CROUCH / 2 ? 0 : 1;
+      } else {
+        if (!s.launched) { s.launched = true; this.takeoffBurst(s.g.x, s.g.y, this.isFire(s.owner)); }
+        s.flyFrame = 2;
+        s.alt += (FLY_ALT - s.alt) * 0.25;
+      }
+    } else if (flying) {
+      s.flyAnim = 'run';
+      s.alt += (FLY_ALT + Math.sin(now / 220 + s.id) * 4 - s.alt) * 0.12;
+    } else {
+      // Landing: keep flapping while gliding down
+      s.alt += (0 - s.alt) * 0.12;
+      if (s.alt < 1) s.alt = 0;
+      s.flyAnim = s.alt > 3 ? 'run' : 'idle';
+    }
+    s.sprite.y = -s.alt; // the lean in flight is drawn by the rig's bones, never by rotating the sprite
+  }
+
+  isFire(owner) { return this.players.get(owner)?.civ === 'fire'; }
+
+  // The air explosion art, recoloured into flames for the fire civilization
+  blastFx(x, y, scale, fire) {
+    this.spawnFx('airBlast', x, y, scale);
+    if (fire) this.fxLayer.children.at(-1).tint = 0xff7a2a;
+  }
+
+  // Takeoff aura: a low ring of wind (or flames) blasting outward, pixels shooting upward
+  takeoffBurst(x, y, fire = false) {
+    const COLORS = fire ? FIRE_COLORS : WIND_COLORS;
+    this.blastFx(x, y + 10, 2, fire);
+    for (let i = 0; i < 26; i++) {
+      const ang = (i / 26) * Math.PI * 2;
+      const speed = 160 + Math.random() * 60;
+      this.windBits.push({
+        x, y: y + 8, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed * 0.45,
+        life: 0.35, max: 0.35, color: COLORS[i % COLORS.length],
+      });
+    }
+    for (let i = 0; i < 10; i++) {
+      this.windBits.push({
+        x: x + (Math.random() - 0.5) * 20, y: y + 4, vx: (Math.random() - 0.5) * 30, vy: -(150 + Math.random() * 120),
+        life: 0.4, max: 0.4, color: COLORS[i % COLORS.length],
+      });
+    }
+    this.shockwaves.push({ x, y: y + 8, radius: 34, t: 0, life: 0.3, colors: COLORS });
+  }
+
+  // Stunned units: three pixel stars circling over the head
+  drawStun(s, r) {
+    const px = 2.2;
+    const t = performance.now() / 160;
+    for (let i = 0; i < 3; i++) {
+      const a = t + (i * Math.PI * 2) / 3;
+      const x = s.g.x + Math.cos(a) * 9;
+      const y = s.g.y - r - 22 + Math.sin(a) * 3;
+      this.effects.rect(x - px / 2, y - px * 1.5, px, px * 3).rect(x - px * 1.5, y - px / 2, px * 3, px)
+        .fill(STUN_COLORS[i]);
+    }
+  }
+
+  // Flyer's dive impact: dust, a double pixel shockwave, a wall of wind pixels over the whole blast
+  // radius, debris thrown up, and a short camera shake
+  windBlast(x, y, radius, attackerId, fire = false) {
+    const COLORS = fire ? FIRE_COLORS : WIND_COLORS;
+    const attacker = this.sprites.get(attackerId);
+    if (attacker) attacker.lastBlast = performance.now();
+    this.sfx('arrowHit', x, y);
+    this.blastFx(x, y + 8, 4, fire); // whole-number scale keeps the pixel art crisp
+    this.shockwaves.push({ x, y, radius: radius * 1.4, t: 0, life: 0.45, colors: COLORS }, { x, y, radius: radius * 0.8, t: -0.08, life: 0.4, colors: COLORS });
+    for (let i = 0; i < 24; i++) {
+      this.windBits.push({
+        x: x + (Math.random() - 0.5) * radius, y: y + (Math.random() - 0.5) * radius * 0.5,
+        vx: (Math.random() - 0.5) * 60, vy: -(120 + Math.random() * 160),
+        life: 0.55, max: 0.55, color: COLORS[i % COLORS.length],
+      });
+    }
+    const p = this.world.toGlobal({ x, y });
+    const { width, height } = this.app.screen;
+    if (p.x > 0 && p.y > 0 && p.x < width && p.y < height) this.shake = Math.max(this.shake ?? 0, 0.3);
+    for (let i = 0; i < 70; i++) {
+      const ang = (i / 70) * Math.PI * 2 + Math.random() * 0.2;
+      const speed = radius * (4 + Math.random() * 2); // wind bits slow down ~8% a frame, so this carries them ~radius
+      const start = 4 + Math.random() * 6;
+      this.windBits.push({
+        x: x + Math.cos(ang) * start, y: y + Math.sin(ang) * start * 0.6,
+        vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed * 0.6,
+        life: 0.5, max: 0.5, color: COLORS[i % COLORS.length],
+      });
+    }
+  }
+
+  // Fireball: a flickering pixel ball on a high arc, shedding embers that cool into smoke; bursts
+  // into flames on impact
+  drawFireballs(dt) {
+    const FLIGHT_TIME = 0.6;
+    const px = UNIT_ART.archer.scale;
+    const g = this.effects;
+    const dot = (x, y, color) => g.rect(Math.round(x / px) * px, Math.round(y / px) * px, px, px).fill(color);
+    for (const f of this.fireballs) {
+      f.t += dt / FLIGHT_TIME;
+      const target = this.sprites.get(f.targetId);
+      if (target) f.to = { x: target.g.x, y: target.g.y };
+      const t = Math.min(1, f.t);
+      const x = f.x + (f.to.x - f.x) * t;
+      const y = f.y + (f.to.y - f.y) * t - 14 - Math.sin(t * Math.PI) * 30;
+      // Ball: a 7x7 diamond with a white-hot core, a randomly flickering edge and flame licks
+      // trailing behind it
+      for (let dy = -3; dy <= 3; dy++) {
+        for (let dx = -3; dx <= 3; dx++) {
+          const d = Math.abs(dx) + Math.abs(dy);
+          if (d > 3 || (d === 3 && Math.random() < 0.4)) continue;
+          dot(x + dx * px, y + dy * px, FIRE_COLORS[Math.min(3, d + (Math.random() < 0.3 ? 1 : 0))]);
+        }
+      }
+      const back = Math.atan2(f.y - f.to.y, f.x - f.to.x);
+      for (let i = 1; i <= 4; i++) {
+        const wob = (Math.random() - 0.5) * 2;
+        dot(x + Math.cos(back) * (i + 2) * px + wob * px, y + Math.sin(back) * (i + 2) * px, FIRE_COLORS[Math.min(3, i)]);
+      }
+      for (let i = 0; i < 5; i++) {
+        this.windBits.push({
+          x: x + (Math.random() - 0.5) * 6, y: y + (Math.random() - 0.5) * 6,
+          vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, g: -60,
+          life: 0.5, max: 0.5, colors: EMBER_COLORS,
+        });
+      }
+      if (f.t >= 1) this.fireBurst(f.to.x, f.to.y - 10);
+    }
+    this.fireballs = this.fireballs.filter((f) => f.t < 1);
+  }
+
+  // Where a fire mage's hand is in the world. Art coords are relative to the rig's 16px reference
+  // sprite; the frame puts that sprite at (10, 10) and the sprite anchor at (12, 28 * 0.62).
+  mageHand(s, ax, ay) {
+    const k = UNIT_ART.archer.scale;
+    return { x: s.g.x + (ax + 10 - 12) * k * s.facing, y: s.g.y + s.sprite.y + (ay + 10 - 28 * 0.62) * k };
+  }
+
+  // Fire mage particles: embers always rise off the flame in its hand; while winding up an attack,
+  // sparks spiral in toward the fireball forming over its head
+  mageFire(s) {
+    const casting = s.action === 'attacking';
+    const frame = s.sprite.currentFrame;
+    if (casting && frame < 3) {
+      const c = this.mageHand(s, 2, 0);
+      for (let i = 0; i < 3; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = 14 + Math.random() * 10;
+        this.windBits.push({
+          x: c.x + Math.cos(a) * d, y: c.y + Math.sin(a) * d * 0.7,
+          vx: -Math.cos(a) * d * 5, vy: -Math.sin(a) * d * 3.5,
+          life: 0.22, max: 0.22, colors: [0xfff3b0, 0xffd34d, 0xff8a2a],
+        });
+      }
+      return;
+    }
+    if (casting || Math.random() > 0.45) return;
+    const h = this.mageHand(s, 7, 4);
+    this.windBits.push({
+      x: h.x + (Math.random() - 0.5) * 3, y: h.y, vx: (Math.random() - 0.5) * 12, vy: -(20 + Math.random() * 25), g: -30,
+      life: 0.5, max: 0.5, colors: EMBER_COLORS,
+    });
+  }
+
+  // The moment the fireball leaves: the cast animation jumps to the throw, flames burst from the
+  // hands and a hot ring pushes out
+  mageRelease(s) {
+    if (!s) return;
+    if (s.sprite.totalFrames > 3) s.sprite.gotoAndPlay(3);
+    const h = this.mageHand(s, 8, 6);
+    for (let i = 0; i < 22; i++) {
+      const a = (Math.random() - 0.5) * 1.6;
+      const speed = 60 + Math.random() * 120;
+      this.windBits.push({
+        x: h.x, y: h.y, vx: Math.cos(a) * speed * s.facing, vy: Math.sin(a) * speed - 20, g: -80,
+        life: 0.45, max: 0.45, colors: [0xfff3b0, ...EMBER_COLORS],
+      });
+    }
+    this.shockwaves.push({ x: s.g.x, y: s.g.y + 8, radius: 26, t: 0, life: 0.25, colors: FIRE_COLORS });
+  }
+
+  // Fireball impact: flames thrown out in a ring, sparks shooting up, a hot shockwave
+  fireBurst(x, y) {
+    this.sfx('arrowHit', x, y);
+    for (let i = 0; i < 40; i++) {
+      const ang = (i / 40) * Math.PI * 2 + Math.random() * 0.2;
+      const speed = 100 + Math.random() * 120;
+      this.windBits.push({
+        x, y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed * 0.6, g: -120,
+        life: 0.5 + Math.random() * 0.3, max: 0.8, colors: EMBER_COLORS,
+      });
+    }
+    for (let i = 0; i < 10; i++) {
+      this.windBits.push({
+        x: x + (Math.random() - 0.5) * 12, y, vx: (Math.random() - 0.5) * 40, vy: -(120 + Math.random() * 120),
+        life: 0.6, max: 0.6, colors: [0xfff3b0, ...EMBER_COLORS],
+      });
+    }
+    this.shockwaves.push(
+      { x, y: y + 10, radius: 42, t: 0, life: 0.3, colors: FIRE_COLORS },
+      { x, y: y + 10, radius: 24, t: -0.06, life: 0.25, colors: FIRE_COLORS },
+    );
+  }
+
+  // A burning unit or building: flame tongues licking up its body, embers and smoke rising off it,
+  // and (units) the sprite flickering orange
+  drawBurning(s) {
+    const building = isBuildingType(s.type);
+    const half = building ? buildingSize(s.type) / 2 : ENTITY_STATS[s.type].radius;
+    const px = 2.2;
+    const now = performance.now();
+    const n = building ? 6 : 3;
+    for (let i = 0; i < n; i++) {
+      // Each tongue flickers in height on its own beat
+      const fx = s.g.x + ((i + 0.5) / n - 0.5) * half * 1.6;
+      const base = s.g.y + (building ? half * 0.6 : 2);
+      const h = 2 + Math.round((Math.sin(now / 70 + i * 2.1 + s.id) + 1) * 1.5);
+      for (let k = 0; k < h; k++) {
+        const color = FIRE_COLORS[Math.min(3, Math.floor((k / h) * 4))];
+        const sway = Math.round(Math.sin(now / 90 + k + i) * 0.6);
+        this.effects.rect(Math.round(fx / px) * px + sway * px, Math.round(base / px) * px - k * px, px, px).fill(color);
+      }
+    }
+    if (Math.random() < (building ? 0.6 : 0.35)) {
+      this.windBits.push({
+        x: s.g.x + (Math.random() - 0.5) * half * 1.4, y: s.g.y - Math.random() * 14,
+        vx: (Math.random() - 0.5) * 15, vy: -(30 + Math.random() * 30), g: -40,
+        life: 0.8, max: 0.8, colors: EMBER_COLORS,
+      });
+    }
+    if (!building) s.sprite.tint = Math.sin(now / 60 + s.id) > 0.2 ? 0xffb27a : 0xffffff;
+  }
+
+  // Air blast: a spinning knot of grey/white/blue pixels with a fading trail, bursting on impact.
+  // Drawn as squares on the rig's pixel grid so it matches the pixel-art units.
+  drawGusts(dt) {
+    const FLIGHT_TIME = 0.4;
+    const px = UNIT_ART.archer.scale; // one art pixel in world units
+    const g = this.effects;
+    const dot = (x, y, color, alpha = 1) => {
+      g.rect(Math.round(x / px) * px, Math.round(y / px) * px, px, px).fill({ color, alpha });
+    };
+    for (const a of this.gusts) {
+      a.t += dt / FLIGHT_TIME;
+      const target = this.sprites.get(a.targetId);
+      if (target) a.to = { x: target.g.x, y: target.g.y };
+      const t = Math.min(1, a.t);
+      const cx = a.x + (a.to.x - a.x) * t;
+      const cy = a.y + (a.to.y - a.y) * t - 12;
+      const heading = Math.atan2(a.to.y - a.y, a.to.x - a.x);
+      a.spin += dt * 18;
+      // Swirl: points on a squashed ring around the centre, stretched along the flight path
+      const size = 1 + Math.sin(t * Math.PI) * 0.6;
+      for (let i = 0; i < 9; i++) {
+        const ang = a.spin + (i / 9) * Math.PI * 2;
+        const along = Math.cos(ang) * 6 * size;
+        const across = Math.sin(ang) * 3.5 * size;
+        dot(
+          cx + Math.cos(heading) * along - Math.sin(heading) * across,
+          cy + Math.sin(heading) * along + Math.cos(heading) * across,
+          WIND_COLORS[i % WIND_COLORS.length],
+        );
+      }
+      dot(cx, cy, 0xffffff);
+      // Trail pixels drift backwards and fade
+      for (let i = 0; i < 2; i++) {
+        this.windBits.push({
+          x: cx + (Math.random() - 0.5) * 6, y: cy + (Math.random() - 0.5) * 6,
+          vx: -Math.cos(heading) * 30 + (Math.random() - 0.5) * 20,
+          vy: -Math.sin(heading) * 30 + (Math.random() - 0.5) * 20,
+          life: 0.3, max: 0.3, color: WIND_COLORS[Math.floor(Math.random() * WIND_COLORS.length)],
+        });
+      }
+      if (a.t >= 1) {
+        this.sfx('arrowHit', a.to.x, a.to.y);
+        // Burst: a ring of pixels thrown outward
+        for (let i = 0; i < 18; i++) {
+          const ang = (i / 18) * Math.PI * 2 + Math.random() * 0.3;
+          const speed = 50 + Math.random() * 50;
+          this.windBits.push({
+            x: a.to.x, y: a.to.y - 12, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed * 0.6,
+            life: 0.45, max: 0.45, color: WIND_COLORS[i % WIND_COLORS.length],
+          });
+        }
+      }
+    }
+    this.gusts = this.gusts.filter((a) => a.t < 1);
+    // Loose pixels (wind, embers): `g` accelerates them vertically (negative = rising), and with
+    // `colors` they step through the list as they age (fire -> smoke)
+    for (const b of this.windBits) {
+      b.life -= dt;
+      b.vy += (b.g ?? 0) * dt;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.vx *= 0.92;
+      b.vy *= 0.92;
+      const age = 1 - b.life / b.max;
+      const color = b.colors ? b.colors[Math.min(b.colors.length - 1, Math.floor(age * b.colors.length))] : b.color;
+      if (b.life > 0) dot(b.x, b.y, color, Math.min(1, (b.life / b.max) * 1.5));
+    }
+    this.windBits = this.windBits.filter((b) => b.life > 0);
+    // Shockwaves: a squashed ring of pixels growing outward and thinning
+    for (const w of this.shockwaves) {
+      w.t += dt;
+      if (w.t < 0) continue;
+      const q = w.t / w.life;
+      const rx = w.radius * (0.2 + q * 0.8);
+      const n = Math.round(rx * 1.2);
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const colors = w.colors ?? WIND_COLORS;
+        dot(w.x + Math.cos(a) * rx, w.y + Math.sin(a) * rx * 0.45, colors[i % 3], 1 - q);
+      }
+    }
+    this.shockwaves = this.shockwaves.filter((w) => w.t < w.life);
   }
 
   drawArrows(dt) {
@@ -859,10 +1473,10 @@ export class Game {
     if (!s) return;
     if (isBuildingType(s.type)) {
       const half = buildingSize(s.type) / 2;
-      g.ellipse(s.x, s.y + half - 4, half + 8, half / 2.5).stroke({ width: 2, color: HOVER_COLOR });
+      drawRing(g, s.x, s.y + half - 4, (half + 8) / 16, HOVER_COLOR, BUILDING_RING);
     } else {
       const r = ENTITY_STATS[s.type].radius;
-      g.ellipse(s.g.x, s.g.y + r * 0.9, r + 5, r * 0.6).stroke({ width: 2, color: HOVER_COLOR });
+      drawRing(g, s.g.x, s.g.y + r * 0.9, (r + 5) / 8, HOVER_COLOR);
     }
   }
 
@@ -871,7 +1485,13 @@ export class Game {
   renderHud() {
     const mine = [...this.sprites.values()].filter((s) => s.owner === this.myId);
     const villagers = mine.filter((s) => s.type === 'villager');
-    const idle = villagers.filter((s) => !s.task).length;
+    const idleVillagers = this.idleVillagers();
+    const idle = idleVillagers.length;
+    const btn = this.ui.idleButton;
+    if (btn) {
+      btn.classList.toggle('hidden', idle === 0);
+      btn.textContent = `💤 Aldeano inactivo (${idle})`;
+    }
     const army = mine.filter((s) => SOLDIERS.has(s.type)).length;
     const popFull = this.pop.used >= this.pop.cap;
     const items = [
@@ -1210,6 +1830,27 @@ export class Game {
 
   // Ctrl/Cmd + digit saves the selected units as a group; the digit alone selects it again, and pressing
   // it twice quickly centres the camera on the group
+  // My villagers with no job (a plain move order that has finished counts as idle)
+  idleVillagers() {
+    return [...this.sprites.entries()]
+      .filter(([, s]) => s.owner === this.myId && s.type === 'villager' && !s.task && s.action !== 'moving')
+      .map(([id]) => id);
+  }
+
+  // Selects the next idle villager (cycling on repeated use) and centres the camera on it
+  selectIdleVillager() {
+    const ids = this.idleVillagers().sort((a, b) => a - b);
+    if (!ids.length) return;
+    const id = ids.find((i) => i > (this.lastIdleId ?? -Infinity)) ?? ids[0];
+    this.lastIdleId = id;
+    this.selected = new Set([id]);
+    const { g } = this.sprites.get(id);
+    const k = this.world.scale.x;
+    this.world.position.set(this.app.screen.width / 2 - g.x * k, this.app.screen.height / 2 - g.y * k);
+    this.clampCamera();
+    this.renderHud();
+  }
+
   handleGroupKey(e) {
     const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
     if (!digit || e.target.closest?.('input, textarea')) return false;
@@ -1244,11 +1885,14 @@ export class Game {
     this.onKeyDown = (e) => {
       if (e.key === 'Escape') { this.placing = null; this.renderHud(); }
       if (this.handleGroupKey(e)) return;
+      if (e.key === '.' && !e.target.closest?.('input, textarea')) { this.selectIdleVillager(); return; }
       this.keys.add(e.key.toLowerCase());
     };
     this.onKeyUp = (e) => this.keys.delete(e.key.toLowerCase());
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
+    this.onIdleClick = () => this.selectIdleVillager();
+    this.ui.idleButton?.addEventListener('click', this.onIdleClick);
     this.app.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     this.app.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
@@ -1298,6 +1942,9 @@ export class Game {
     clearTimeout(this.messageTimer);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    this.ui.idleButton?.removeEventListener('click', this.onIdleClick);
+    this.ui.idleButton?.classList.add('hidden');
+    this.territory?.destroy();
     this.ui.tooltip.classList.add('hidden');
     this.ui.buildMenu.replaceChildren();
     this.app?.renderer && this.app.destroy(true, { children: true });

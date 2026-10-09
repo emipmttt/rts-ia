@@ -1,6 +1,6 @@
 import {
   TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, STARTING_VILLAGERS, STARTING_STOCK,
-  MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, EntityType, ENTITY_STATS, RESOURCE_STATS, MAX_POPULATION,
+  MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, CIVILIZATIONS, EntityType, ENTITY_STATS, unitStats, RESOURCE_STATS, MAX_POPULATION,
   Terrain, ResourceType, mapTilesFor, SCORE, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP,
 } from '../shared/constants.js';
 import {
@@ -93,11 +93,19 @@ export class GameRoom {
       ...this.summary(),
       hostId: this.hostId,
       players: [...this.players.values()].map(({
-        id, name, faction, color, flag,
+        id, name, faction, color, flag, civ,
       }) => ({
-        id, name, faction, color, flag,
+        id, name, faction, color, flag, civ,
       })),
     };
+  }
+
+  // Each player picks their own civilization while the room is waiting
+  setCiv(playerId, civ) {
+    const player = this.players.get(playerId);
+    if (!player || this.status !== RoomStatus.WAITING || !CIVILIZATIONS.some((c) => c.id === civ)) return;
+    player.civ = civ;
+    this.broadcastRoom();
   }
 
   broadcastRoom() { this.io.to(this.id).emit('room:update', this.details()); }
@@ -108,7 +116,7 @@ export class GameRoom {
     const free = FACTIONS.filter((f) => !used.has(f.id));
     const faction = free[Math.floor(Math.random() * free.length)];
     this.players.set(playerId, {
-      id: playerId, name, faction: faction.id, color: faction.color, stock: { ...STARTING_STOCK }, defeated: false,
+      id: playerId, name, faction: faction.id, color: faction.color, civ: CIVILIZATIONS[0].id, stock: { ...STARTING_STOCK }, defeated: false,
       connected: true, pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
       gatherLevel: 0, // lumber camp upgrades researched
       flag: typeof flag === 'string' && flag.startsWith('data:image/png;base64,') && flag.length <= FLAG_MAX_LENGTH ? flag : null,
@@ -287,6 +295,7 @@ export class GameRoom {
     const cols = Math.ceil(Math.sqrt(units.length));
     units.forEach((u, i) => {
       u.task = null;
+      delete u.resumeTask;
       u.tx = clamp(x + (i % cols) * 30 - cols * 15, 0, this.mapSize);
       u.ty = clamp(y + Math.floor(i / cols) * 30 - cols * 15, 0, this.mapSize);
     });
@@ -302,6 +311,7 @@ export class GameRoom {
     ) ?? resource;
     for (const u of this.ownedVillagers(playerId, unitIds)) {
       u.task = { type: 'gather', resourceId: target.id, resourceType: target.type };
+      delete u.resumeTask;
     }
   }
 
@@ -327,21 +337,29 @@ export class GameRoom {
 
     for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
     const building = this.addBuilding(type, playerId, tx, ty, false);
-    for (const u of builders) u.task = { type: 'build', buildingId: building.id };
+    for (const u of builders) this.assignBuild(u, building.id);
+  }
+
+  // A villager pulled off gathering/farming to build remembers that job and goes back to it
+  // when there's nothing left to build (any other order forgets it)
+  assignBuild(u, buildingId) {
+    if (u.task?.type === 'gather' || u.task?.type === 'farm') u.resumeTask = u.task;
+    else if (u.task?.type !== 'build') delete u.resumeTask;
+    u.task = { type: 'build', buildingId };
   }
 
   // Send villagers to help finish an existing construction
   handleConstruct(playerId, { unitIds, buildingId }) {
     const building = this.entities.get(buildingId);
     if (!building || building.owner !== playerId || !isBuilding(building) || building.built) return;
-    for (const u of this.ownedVillagers(playerId, unitIds)) u.task = { type: 'build', buildingId };
+    for (const u of this.ownedVillagers(playerId, unitIds)) this.assignBuild(u, buildingId);
   }
 
   // Assign villagers to harvest a finished farm
   handleFarm(playerId, { unitIds, buildingId }) {
     const farm = this.entities.get(buildingId);
     if (!farm || farm.owner !== playerId || !ENTITY_STATS[farm.type].farm || !farm.built) return;
-    for (const u of this.ownedVillagers(playerId, unitIds)) u.task = { type: 'farm', buildingId };
+    for (const u of this.ownedVillagers(playerId, unitIds)) { u.task = { type: 'farm', buildingId }; delete u.resumeTask; }
   }
 
   // Replant a harvested farm, paying wood
@@ -403,6 +421,7 @@ export class GameRoom {
     for (const u of this.ownedUnits(playerId, unitIds)) {
       if (!ENTITY_STATS[u.type].attack) continue; // monks
       if (target.central && target.hp <= 0) {
+        delete u.resumeTask;
         if (u.type === EntityType.VILLAGER) u.task = { type: 'capture', buildingId: target.id };
       } else if (target.owner !== playerId) {
         u.task = { type: 'attack', targetId: target.id };
@@ -738,6 +757,7 @@ export class GameRoom {
       const pending = [...this.entities.values()].filter((e) => isBuilding(e) && e.owner === u.owner && !e.built);
       const next = this.closest(pending, u.x, u.y, NEXT_CONSTRUCTION_RADIUS);
       if (next) u.task = { type: 'build', buildingId: next.id };
+      else if (u.resumeTask) { u.task = u.resumeTask; delete u.resumeTask; }
       else { u.task = null; u.tx = u.x; u.ty = u.y; }
       return;
     }
@@ -761,15 +781,66 @@ export class GameRoom {
   updateAttacker(u) {
     const target = this.entities.get(u.task.targetId);
     if (!target || target.owner === u.owner || (target.central && target.hp <= 0)) { u.task = null; return; }
-    const { attack } = ENTITY_STATS[u.type];
+    const { attack } = unitStats(u.type, this.players.get(u.owner)?.civ);
     const reach = attack.range + ENTITY_STATS[u.type].radius + this.bodyRadius(target) + 2;
     if (!this.moveToward(u, target.x, target.y, reach)) return;
 
     u.action = 'attacking';
     if (u.cooldown > 0) return;
     u.cooldown = attack.cooldown;
-    if (attack.range > 0) this.shots.push({ x: u.x, y: u.y, targetId: target.id });
+    if (attack.range > 0 && !attack.area) {
+      this.shots.push({
+        x: u.x, y: u.y, targetId: target.id, kind: attack.burn ? 'fireball' : u.type, attackerId: u.id,
+      });
+    }
+    if (attack.burn) target.burn = { ...attack.burn, time: attack.burn.duration, owner: u.owner, acc: 0 };
+    if (attack.area) { this.areaBlast(u, target, attack); return; }
     this.damage(target, attack.damage, u.owner);
+  }
+
+  // Gust around the attacker: damages the target plus every enemy unit within `area`, stuns them and
+  // knocks them back (their `knock` velocity is applied and decays in applyKnockback)
+  areaBlast(u, target, attack) {
+    this.shots.push({
+      x: u.x, y: u.y, targetId: target.id, kind: 'blast', radius: attack.area, attackerId: u.id, fire: !!attack.burn,
+    });
+    const hit = new Set([target]);
+    for (const e of this.entities.values()) {
+      if (!isUnit(e) || !e.owner || e.owner === u.owner) continue;
+      if (Math.hypot(e.x - u.x, e.y - u.y) <= attack.area + ENTITY_STATS[e.type].radius) hit.add(e);
+    }
+    for (const e of hit) {
+      if (isUnit(e)) {
+        const d = Math.hypot(e.x - u.x, e.y - u.y) || 1;
+        e.knock = { vx: ((e.x - u.x) / d) * attack.knockback, vy: ((e.y - u.y) / d) * attack.knockback };
+        if (attack.stun) e.stun = Math.max(e.stun ?? 0, attack.stun);
+      }
+      if (attack.burn) e.burn = { ...attack.burn, time: attack.burn.duration, owner: u.owner, acc: 0 };
+      this.damage(e, attack.damage, u.owner);
+    }
+  }
+
+  // Burning entities take damage every tick until the fire goes out
+  applyBurns() {
+    for (const e of [...this.entities.values()]) {
+      if (!e.burn) continue;
+      e.burn.time -= DT;
+      e.burn.acc += e.burn.dps * DT;
+      const whole = Math.floor(e.burn.acc);
+      if (whole > 0) { e.burn.acc -= whole; this.damage(e, whole, e.burn.owner); }
+      if (e.burn && e.burn.time <= 0) delete e.burn;
+    }
+  }
+
+  applyKnockback() {
+    for (const e of this.entities.values()) {
+      if (!e.knock) continue;
+      e.x = clamp(e.x + e.knock.vx * DT, 0, this.mapSize);
+      e.y = clamp(e.y + e.knock.vy * DT, 0, this.mapSize);
+      e.knock.vx *= 0.8;
+      e.knock.vy *= 0.8;
+      if (Math.hypot(e.knock.vx, e.knock.vy) < 10) delete e.knock;
+    }
   }
 
   // Finished towers and town centers shoot the closest enemy unit in range, sticking to a target while it stays in range
@@ -954,6 +1025,8 @@ export class GameRoom {
       if (isBuilding(e)) { this.updateProduction(e); this.updateResearch(e); this.updateTower(e); continue; }
       e.action = 'idle';
       e.cooldown = Math.max(0, e.cooldown - DT);
+      // Stunned units (flyer impact) can't move or act until it wears off
+      if (e.stun > 0) { e.stun -= DT; e.action = 'stunned'; continue; }
       if (e.type === EntityType.GUARD) this.leashGuard(e);
       const task = e.task?.type;
       if (task === 'heal') this.updateHealer(e);
@@ -969,6 +1042,8 @@ export class GameRoom {
       else if (e.unreachable) { e.tx = e.x; e.ty = e.y; } // stop on the river bank / forest edge
     }
     this.updateSheep();
+    this.applyKnockback();
+    this.applyBurns();
     this.separateUnits();
     if (this.central?.owner) this.central.controlTime += DT;
 
@@ -1039,7 +1114,7 @@ export class GameRoom {
   }
 
   serialize(e) {
-    const base = { id: e.id, type: e.type, owner: e.owner, x: e.x, y: e.y, hp: e.hp };
+    const base = { id: e.id, type: e.type, owner: e.owner, x: e.x, y: e.y, hp: e.hp, burning: !!e.burn };
     if (isBuilding(e)) {
       return {
         ...base, tx: e.tx, ty: e.ty, built: e.built, buildProgress: e.buildProgress,
@@ -1053,6 +1128,7 @@ export class GameRoom {
       task: e.task?.type ?? null,
       buildingId: e.task?.type === 'build' || e.task?.type === 'farm' ? e.task.buildingId : null,
       targetId: e.task?.type === 'attack' || e.task?.type === 'heal' ? e.task.targetId : null,
+      resourceId: e.task?.type === 'gather' ? e.task.resourceId : null,
       action: e.action,
       carry: e.carry,
       // 0..1 fill of the villager's carry load, including the partial unit being gathered

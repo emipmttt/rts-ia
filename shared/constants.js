@@ -8,6 +8,29 @@ export const FACTIONS = [
   { id: 'purple', color: 0x9b59b6 },
   { id: 'black', color: 0x6b7280 },
 ];
+// Civilizations each player picks in the waiting room; they change the units' art
+export const CIVILIZATIONS = [
+  { id: 'air', name: 'Aire' },
+  { id: 'fire', name: 'Fuego' },
+];
+// Per-civilization stat changes, merged over ENTITY_STATS by unitStats()
+export const CIV_STATS = {
+  fire: {
+    // Fire mage: slower fireballs that set the target burning for `burn.duration` seconds
+    // Fire flyer: slower dives whose impact sets everything around burning instead of stunning
+    horseman: {
+      name: 'Volador de fuego',
+      attack: {
+        damage: 8, range: 0, cooldown: 2.4, area: 60, knockback: 480, burn: { dps: 3, duration: 3 },
+      },
+    },
+    archer: { name: 'Mago de fuego', attack: { damage: 4, range: 160, cooldown: 2.6, burn: { dps: 3, duration: 3 } } },
+  },
+};
+export const unitStats = (type, civ) => {
+  const over = CIV_STATS[civ]?.[type];
+  return over ? { ...ENTITY_STATS[type], ...over } : ENTITY_STATS[type];
+};
 export const MAX_PLAYERS_PER_ROOM = FACTIONS.length;
 
 // World: square grid of tiles
@@ -118,8 +141,10 @@ export const ENTITY_STATS = {
     attack: { damage: 5, range: 160, cooldown: 1.5 }, aggroRange: 220,
   },
   [EntityType.HORSEMAN]: {
-    kind: 'unit', name: 'Jinete', radius: 13, speed: 150, hp: 100, cost: { food: 80, gold: 60 }, trainTime: 18,
-    attack: { damage: 8, range: 0, cooldown: 1.2 }, aggroRange: 200,
+    // Wind flyer: flies when moving; attacks by diving onto the target, and the impact gust hits every
+    // enemy unit around it, shoves them away and stuns them for `stun` seconds
+    kind: 'unit', name: 'Volador', radius: 13, speed: 150, hp: 100, cost: { food: 80, gold: 60 }, trainTime: 18,
+    attack: { damage: 8, range: 0, cooldown: 1.6, area: 60, knockback: 480, stun: 1.2 }, aggroRange: 200,
   },
   // Monks don't fight: they walk up to hurt friendly units nearby and heal them
   [EntityType.MONK]: {

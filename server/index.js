@@ -37,6 +37,7 @@ io.on('connection', (socket) => {
   socket.on('room:join', (data) => lobby.join(socket, data ?? {}));
   socket.on('room:leave', () => lobby.leave(socket));
   socket.on('room:start', () => lobby.start(socket));
+  socket.on('room:civ', (civ) => lobby.civ(socket, civ));
   socket.on('room:settings', (settings) => lobby.settings(socket, settings ?? {}));
   socket.on('chat', (text) => lobby.roomOf(socket)?.handleChat(socket.data.playerId, text));
 

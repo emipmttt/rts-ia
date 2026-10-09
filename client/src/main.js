@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client';
 import { Game } from './game.js';
+import { CIVILIZATIONS } from '../../shared/constants.js';
 import {
   play, startAmbient, stopAmbient, isMuted, setMuted,
 } from './audio.js';
@@ -157,7 +158,20 @@ socket.on('room:update', (room) => {
     const tag = document.createElement('span');
     tag.className = 'muted';
     tag.textContent = p.id === room.hostId ? 'anfitrión' : '';
-    li.append(name, tag);
+    // Civilization: my own is a picker, everyone else's is shown as text
+    let civ;
+    if (p.id === myId) {
+      civ = document.createElement('select');
+      civ.className = 'civ-select';
+      civ.title = 'Civilización';
+      for (const c of CIVILIZATIONS) civ.add(new Option(c.name, c.id, false, c.id === p.civ));
+      civ.addEventListener('change', () => socket.emit('room:civ', civ.value));
+    } else {
+      civ = document.createElement('span');
+      civ.className = 'muted';
+      civ.textContent = CIVILIZATIONS.find((c) => c.id === p.civ)?.name ?? '';
+    }
+    li.append(name, civ, tag);
     list.append(li);
   }
 
@@ -191,6 +205,7 @@ socket.on('game:start', async (data) => {
   startAmbient();
   game = new Game(socket, myId, $('game'), {
     hud: $('hud'), ranking: $('ranking'), tooltip: $('tooltip'), buildMenu: $('build-menu'), message: $('message'),
+    idleButton: $('idle-btn'),
   });
   await game.init(data);
 });

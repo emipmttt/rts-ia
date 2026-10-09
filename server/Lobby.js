@@ -95,6 +95,10 @@ export class Lobby {
     else this.leave(socket);
   }
 
+  civ(socket, civ) {
+    this.roomOf(socket)?.setCiv(socket.data.playerId, civ);
+  }
+
   settings(socket, settings) {
     this.roomOf(socket)?.updateSettings(socket.data.playerId, settings);
   }
