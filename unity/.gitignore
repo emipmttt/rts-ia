@@ -1,0 +1,12 @@
+Library/
+Temp/
+Logs/
+UserSettings/
+obj/
+/Build/
+*.csproj
+*.sln
+.vs/
+.idea/
+Web.zip
+*.app/

@@ -1,2 +1,12 @@
 node_modules
 .DS_Store
+
+# Unity: only the project sources and the web build are versioned
+unity/Library/
+unity/Temp/
+unity/Logs/
+unity/UserSettings/
+unity/obj/
+unity/*.csproj
+unity/*.sln
+unity/Web/*_DoNotShip/

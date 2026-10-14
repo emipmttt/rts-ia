@@ -1,0 +1,357 @@
+using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
+using UnityEngine;
+
+// Port of client/src/assets.js: loads every texture from Resources/assets and cuts it into sprites.
+// Sprites use 40 pixels per unit, so a Pixi sprite of scale s becomes a Unity sprite of localScale s
+// (1 Unity unit = 1 tile = 40 game px).
+namespace RTS
+{
+    public static class GameAssets
+    {
+        public const float PPU = C.TileSize;
+        const string Base = "assets/";
+
+        static readonly Dictionary<string, Texture2D> textures = new Dictionary<string, Texture2D>();
+        static readonly Dictionary<string, Sprite[]> strips = new Dictionary<string, Sprite[]>();
+        static readonly Dictionary<string, Sprite> singles = new Dictionary<string, Sprite>();
+        static JObject rigIndex;
+
+        public static readonly string[] Buildings = { "castle", "barracks", "archery", "monastery", "tower", "house1", "house2", "house3" };
+
+        // Foliage variants (TREE_TINTS); the last AutumnTints are autumn orange
+        static readonly (float h, float s, float l)[] TreeTints =
+        {
+            (0, 1, 1), (-12, 1.05f, 1.08f), (14, 0.9f, 0.92f), (6, 1.15f, 1.02f), (-118, 1.5f, 1.25f), (-128, 1.6f, 1.15f),
+        };
+        public const int AutumnTints = 2;
+        public static int TreeTintCount => TreeTints.Length;
+
+        public static Texture2D Tex(string path)
+        {
+            if (textures.TryGetValue(path, out var t)) return t;
+            t = Resources.Load<Texture2D>(path);
+            if (t == null) Debug.LogWarning($"Missing texture {path}");
+            else t.filterMode = FilterMode.Point;
+            textures[path] = t;
+            return t;
+        }
+
+        public static Texture2D Asset(string name) => Tex(Base + name);
+
+        static Sprite Make(Texture2D tex, Rect rect, Vector2 pivot) =>
+            Sprite.Create(tex, rect, pivot, PPU, 0, SpriteMeshType.FullRect);
+
+        // Horizontal strip of square-ish frames of frameWidth x full height
+        public static Sprite[] Strip(string name, int frameWidth, Vector2 pivot)
+        {
+            var key = $"{name}|{frameWidth}|{pivot}";
+            if (strips.TryGetValue(key, out var s)) return s;
+            var tex = Asset(name);
+            int count = tex.width / frameWidth;
+            s = new Sprite[count];
+            for (int i = 0; i < count; i++) s[i] = Make(tex, new Rect(i * frameWidth, 0, frameWidth, tex.height), pivot);
+            strips[key] = s;
+            return s;
+        }
+
+        public static Sprite Single(string name, Vector2 pivot)
+        {
+            var key = $"{name}|{pivot}";
+            if (singles.TryGetValue(key, out var s)) return s;
+            var tex = Asset(name);
+            s = Make(tex, new Rect(0, 0, tex.width, tex.height), pivot);
+            singles[key] = s;
+            return s;
+        }
+
+        public static Sprite FromTexture(Texture2D tex, Vector2 pivot) => Make(tex, new Rect(0, 0, tex.width, tex.height), pivot);
+
+        // ---- Units ----
+
+        // Procedural rig frames baked by Tools/bake-rigs.mjs: `${rig}_${style}_${view}_${anim}`
+        public static readonly Vector2 RigPivot = new Vector2(0.5f, 4f / 28f); // at the feet
+        public static Sprite[] RigFrames(string faction, string rig, string style, string view, string anim)
+        {
+            var key = $"rig|{faction}|{rig}|{style}_{view}_{anim}";
+            if (strips.TryGetValue(key, out var s)) return s;
+            if (rigIndex == null) rigIndex = JObject.Parse(Resources.Load<TextAsset>("rigs/index").text);
+            var rows = (JArray)rigIndex["rigs"][rig];
+            int fw = (int)rigIndex["frameW"], fh = (int)rigIndex["frameH"];
+            var tex = Tex($"rigs/{faction}_{rig}");
+            var name = $"{style}_{view}_{anim}";
+            for (int r = 0; r < rows.Count; r++)
+            {
+                if ((string)rows[r]["name"] != name) continue;
+                int n = (int)rows[r]["frames"];
+                s = new Sprite[n];
+                for (int i = 0; i < n; i++) s[i] = Make(tex, new Rect(i * fw, tex.height - (r + 1) * fh, fw, fh), RigPivot);
+                break;
+            }
+            if (s == null)
+            {
+                Debug.LogWarning($"Missing rig animation {rig} {name}");
+                s = RigFrames(faction, rig, style, view, "idle");
+            }
+            strips[key] = s;
+            return s;
+        }
+
+        public static bool HasRig(string rig)
+        {
+            if (rigIndex == null) rigIndex = JObject.Parse(Resources.Load<TextAsset>("rigs/index").text);
+            return rigIndex["rigs"][rig] != null;
+        }
+
+        public static bool RigHasAnim(string rig, string anim)
+        {
+            if (!HasRig(rig)) return false;
+            foreach (var row in (JArray)rigIndex["rigs"][rig]) if (((string)row["name"]).EndsWith("_front_" + anim)) return true;
+            return false;
+        }
+
+        // Tiny Swords lancer (central guards): 320 px frames
+        public static Sprite[] Lancer(string faction, string anim) => Strip($"{faction}/lancer_{anim}", 320, new Vector2(0.5f, 0.32f));
+
+        public static Sprite Building(string faction, string name) => Single($"{faction}/{name}", new Vector2(0.5f, 0.04f));
+
+        // ---- Resources ----
+
+        public static Sprite Tree(int kind, int tint)
+        {
+            var key = $"tree|{kind}|{tint}";
+            if (singles.TryGetValue(key, out var s)) return s;
+            var src = Asset(kind == 0 ? "terrain/pine" : "terrain/oak");
+            var tex = RecolorFoliage(src, TreeTints[tint]);
+            s = Make(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0));
+            singles[key] = s;
+            return s;
+        }
+
+        public static Sprite[] Bush(int i) => Strip($"terrain/bush{i + 1}", 128, new Vector2(0.5f, 0.2f));
+        // 16 px bush drawn twice in a cross (see AddResource)
+        public static Sprite BushCross => Single("terrain/bush_cross", new Vector2(0.5f, 0));
+        public static Sprite Gold(int i) => Single($"terrain/gold{i + 1}", new Vector2(0.5f, 0.25f));
+        public static Sprite Stone(int i) => Single($"terrain/stone{i + 1}", new Vector2(0.5f, 0.2f));
+        public static Sprite[] SheepIdle => Strip("terrain/sheep_idle", 128, new Vector2(0.5f, 0.2f));
+        public static Sprite[] SheepGrass => Strip("terrain/sheep_grass", 128, new Vector2(0.5f, 0.2f));
+
+        // Sheep sheet baked by unity/Tools/bake-sheep.py: rows idle, graze, walk, dead of 20x16 frames
+        static readonly string[] SheepRows = { "idle", "graze", "walk", "dead" };
+        public static Sprite[] Sheep(string anim)
+        {
+            var key = "sheep|" + anim;
+            if (strips.TryGetValue(key, out var s)) return s;
+            var tex = Asset("terrain/sheep_rig");
+            int row = System.Array.IndexOf(SheepRows, anim), frames = anim == "dead" ? 1 : 4;
+            s = new Sprite[frames];
+            for (int i = 0; i < frames; i++) s[i] = Make(tex, new Rect(i * 20, tex.height - (row + 1) * 16, 20, 16), new Vector2(0.5f, 2.5f / 16));
+            strips[key] = s;
+            return s;
+        }
+        public static Sprite Arrow => Single("terrain/arrow", new Vector2(0.5f, 0.5f));
+
+        // ---- FX ----
+        static readonly Dictionary<string, int> FxSizes = new Dictionary<string, int>
+        {
+            ["dust1"] = 64, ["dust2"] = 64, ["fire1"] = 64, ["fire2"] = 64, ["fire3"] = 64, ["explosion1"] = 192, ["explosion2"] = 192,
+        };
+
+        public static Sprite[] Fx(string name)
+        {
+            if (name == "airBlast")
+            {
+                if (strips.TryGetValue("airBlast", out var a)) return a;
+                // 6 frames of 32 px in a 2x3 grid, read row by row from the top
+                var tex = Asset("fx/air_blast");
+                a = new Sprite[6];
+                for (int i = 0; i < 6; i++)
+                    a[i] = Make(tex, new Rect((i % 2) * 32, tex.height - (i / 2 + 1) * 32, 32, 32), new Vector2(0.5f, 0.3f));
+                strips["airBlast"] = a;
+                return a;
+            }
+            var pivot = name.StartsWith("fire") ? new Vector2(0.5f, 0.05f) : new Vector2(0.5f, 0.3f);
+            return Strip($"fx/{name}", FxSizes[name], pivot);
+        }
+
+        // ---- Ground ----
+        public static Texture2D Grass => Pastel("terrain/meadow_tile");
+        // Rock face blended over steep slopes by the terrain shader
+        public static Texture2D Cliff => Asset("terrain/cliff_tile");
+        public static Texture2D GrassTuft => Pastel("terrain/grass_tuft");
+
+        // Grass softened toward a light, slightly grey pastel (less saturated, a little brighter)
+        static readonly Dictionary<string, Texture2D> pastels = new Dictionary<string, Texture2D>();
+        static Texture2D Pastel(string name)
+        {
+            if (pastels.TryGetValue(name, out var t)) return t;
+            var src = Asset(name);
+            var px = src.GetPixels32();
+            for (int i = 0; i < px.Length; i++)
+            {
+                var c = px[i];
+                if (c.a == 0) continue;
+                float l = (c.r * 0.3f + c.g * 0.59f + c.b * 0.11f);
+                byte P(byte v) => (byte)Mathf.Clamp(Mathf.RoundToInt((l + (v - l) * 0.68f) * 0.86f + 46), 0, 255);
+                px[i] = new Color32(P(c.r), P(c.g), P(c.b), c.a);
+            }
+            t = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = src.wrapMode, name = src.name + " pastel" };
+            t.SetPixels32(px);
+            t.Apply();
+            pastels[name] = t;
+            return t;
+        }
+        public static Texture2D Sand => Asset("terrain/sand_tile");
+
+        static Texture2D[] water;
+        // Water: 2 animation frames stacked vertically, copied out so they tile
+        public static Texture2D[] Water
+        {
+            get
+            {
+                if (water != null) return water;
+                var src = Asset("terrain/water_tile");
+                water = new Texture2D[2];
+                for (int i = 0; i < 2; i++)
+                {
+                    var t = new Texture2D(16, 16, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Repeat };
+                    t.SetPixels(src.GetPixels(0, src.height - (i + 1) * 16, 16, 16));
+                    t.Apply();
+                    water[i] = t;
+                }
+                return water;
+            }
+        }
+
+        // ---- UI ----
+        public static Texture2D UI(string name) => name == "stone" ? StoneIcon : Asset("ui/" + name);
+
+        static Texture2D stoneIcon;
+        // A grey pixel-art rock for the stone resource (the UI set has no stone icon)
+        static Texture2D StoneIcon
+        {
+            get
+            {
+                if (stoneIcon != null) return stoneIcon;
+                string[] art =
+                {
+                    "................",
+                    "................",
+                    "................",
+                    "......dddd......",
+                    "....ddlllldd....",
+                    "...dllwwllmmd...",
+                    "..dlwwllllmmmd..",
+                    "..dllllllmmmmd..",
+                    ".dmllllmmmmmmkd.",
+                    ".dmmlmmmmmmmkkd.",
+                    ".dmmmmmmmmkkkkd.",
+                    "..dkmmmmmkkkkd..",
+                    "...ddkkkkkkdd...",
+                    ".....dddddd.....",
+                    "................",
+                    "................",
+                };
+                var colors = new Dictionary<char, Color32>
+                {
+                    ['d'] = new Color32(0x3e, 0x3c, 0x3a, 255), ['k'] = new Color32(0x6e, 0x6b, 0x66, 255), ['m'] = new Color32(0x98, 0x95, 0x8e, 255),
+                    ['l'] = new Color32(0xbe, 0xbb, 0xb3, 255), ['w'] = new Color32(0xe6, 0xe4, 0xde, 255),
+                };
+                stoneIcon = new Texture2D(16, 16, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+                for (int y = 0; y < 16; y++)
+                    for (int x = 0; x < 16; x++)
+                        stoneIcon.SetPixel(x, 15 - y, colors.TryGetValue(art[y][x], out var c) ? (Color)c : Color.clear);
+                stoneIcon.Apply();
+                return stoneIcon;
+            }
+        }
+
+        static Texture2D white;
+        public static Texture2D White
+        {
+            get
+            {
+                if (white != null) return white;
+                white = new Texture2D(2, 2) { filterMode = FilterMode.Point };
+                white.SetPixels(new[] { Color.white, Color.white, Color.white, Color.white });
+                white.Apply();
+                return white;
+            }
+        }
+
+        static Sprite whiteSprite;
+        public static Sprite WhiteSprite => whiteSprite ??= Sprite.Create(White, new Rect(0, 0, 2, 2), new Vector2(0.5f, 0), 2);
+
+        // ---- Colour helpers ----
+
+        public static Color Hex(int rgb, float a = 1) =>
+            new Color(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f, a);
+
+        // Copies a texture with only its green pixels (the leaves) shifted; the trunk keeps its colours
+        static Texture2D RecolorFoliage(Texture2D src, (float h, float s, float l) tint)
+        {
+            var px = src.GetPixels32();
+            for (int i = 0; i < px.Length; i++)
+            {
+                var c = px[i];
+                if (c.a == 0 || c.g < c.r + 20) continue;
+                RgbToHsl(c.r, c.g, c.b, out float h, out float s, out float l);
+                HslToRgb((h + tint.h + 360) % 360, Mathf.Min(1, s * tint.s), Mathf.Min(1, l * tint.l), out c.r, out c.g, out c.b);
+                px[i] = c;
+            }
+            var t = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            t.SetPixels32(px);
+            t.Apply();
+            return t;
+        }
+
+        static readonly Dictionary<(Texture2D, int), Texture2D> teamTextures = new Dictionary<(Texture2D, int), Texture2D>();
+
+        // Copies a model texture with its team-green pixels (the rigs' #93ff83 key, in any shade) in
+        // the team colour, each keeping its shade
+        public static Texture2D TeamRecolor(Texture2D src, int team)
+        {
+            if (src == null) return null;
+            if (teamTextures.TryGetValue((src, team), out var t)) return t;
+            var color = Hex(team);
+            var px = src.GetPixels32();
+            for (int i = 0; i < px.Length; i++)
+            {
+                var c = px[i];
+                if (c.a == 0 || c.g < c.r + 50 || c.g < c.b + 50) continue;
+                float k = c.g / 255f;
+                px[i] = new Color32((byte)(color.r * k * 255), (byte)(color.g * k * 255), (byte)(color.b * k * 255), c.a);
+            }
+            t = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false) { filterMode = src.filterMode, wrapMode = src.wrapMode };
+            t.SetPixels32(px);
+            t.Apply();
+            teamTextures[(src, team)] = t;
+            return t;
+        }
+
+        static void RgbToHsl(byte rb, byte gb, byte bb, out float h, out float s, out float l)
+        {
+            float r = rb / 255f, g = gb / 255f, b = bb / 255f;
+            float max = Mathf.Max(r, g, b), min = Mathf.Min(r, g, b);
+            l = (max + min) / 2;
+            if (max == min) { h = 0; s = 0; return; }
+            float d = max - min;
+            s = l > 0.5f ? d / (2 - max - min) : d / (max + min);
+            h = max == r ? (g - b) / d + (g < b ? 6 : 0) : max == g ? (b - r) / d + 2 : (r - g) / d + 4;
+            h *= 60;
+        }
+
+        static void HslToRgb(float h, float s, float l, out byte r, out byte g, out byte b)
+        {
+            float a = s * Mathf.Min(l, 1 - l);
+            float F(float n)
+            {
+                float k = (n + h / 30) % 12;
+                return l - a * Mathf.Max(-1, Mathf.Min(k - 3, Mathf.Min(9 - k, 1)));
+            }
+            r = (byte)Mathf.RoundToInt(F(0) * 255);
+            g = (byte)Mathf.RoundToInt(F(8) * 255);
+            b = (byte)Mathf.RoundToInt(F(4) * 255);
+        }
+    }
+}

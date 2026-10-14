@@ -1,5 +1,7 @@
 import express from 'express';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { brotliDecompressSync, gzipSync } from 'node:zlib';
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -8,8 +10,30 @@ import { PORT } from '../shared/constants.js';
 import { Lobby } from './Lobby.js';
 
 const app = express();
-// Built client (npm run build); resolved from this file so the server can be started from any directory
-app.use(express.static(fileURLToPath(new URL('../dist', import.meta.url))));
+// The game page: the Unity web build (unity/Web) when present, else the old built web client (dist).
+// Resolved from this file so the server can be started from any directory.
+const unityWeb = fileURLToPath(new URL('../unity/Web', import.meta.url));
+if (existsSync(unityWeb)) {
+  // Unity's brotli files (.br): browsers only take brotli over HTTPS, so for plain http they're
+  // decompressed once at startup and sent gzipped instead
+  const TYPES = { '.js': 'application/javascript', '.wasm': 'application/wasm', '.data': 'application/octet-stream' };
+  const build = `${unityWeb}/Build`;
+  const cache = new Map();
+  for (const f of readdirSync(build).filter((n) => n.endsWith('.br'))) {
+    const br = readFileSync(`${build}/${f}`);
+    cache.set(f, { br, gz: gzipSync(brotliDecompressSync(br)), type: TYPES[f.slice(0, -3).match(/\.[a-z]+$/)?.[0]] ?? 'application/octet-stream' });
+  }
+  app.get('/Build/:file', (req, res, next) => {
+    const entry = cache.get(req.params.file);
+    if (!entry) return next();
+    const brotli = req.secure && req.acceptsEncodings('br') === 'br';
+    res.set({ 'Content-Type': entry.type, 'Content-Encoding': brotli ? 'br' : 'gzip', Vary: 'Accept-Encoding', 'Cache-Control': 'no-cache' });
+    res.send(brotli ? entry.br : entry.gz);
+  });
+  app.use(express.static(unityWeb));
+} else {
+  app.use(express.static(fileURLToPath(new URL('../dist', import.meta.url))));
+}
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 const httpServer = createServer(app);
