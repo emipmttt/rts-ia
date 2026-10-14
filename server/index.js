@@ -42,15 +42,17 @@ io.on('connection', (socket) => {
   socket.on('chat', (text) => lobby.roomOf(socket)?.handleChat(socket.data.playerId, text));
 
   // In-game commands
-  socket.on('game:move', (order) => lobby.roomOf(socket)?.handleMove(socket.data.playerId, order ?? {}));
-  socket.on('game:gather', (order) => lobby.roomOf(socket)?.handleGather(socket.data.playerId, order ?? {}));
-  socket.on('game:build', (order) => lobby.roomOf(socket)?.handleBuild(socket.data.playerId, order ?? {}));
-  socket.on('game:construct', (order) => lobby.roomOf(socket)?.handleConstruct(socket.data.playerId, order ?? {}));
+  socket.on('game:move', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'move', order ?? {}));
+  socket.on('game:gather', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'gather', order ?? {}));
+  socket.on('game:build', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'build', order ?? {}));
+  socket.on('game:construct', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'construct', order ?? {}));
   socket.on('game:train', (order) => lobby.roomOf(socket)?.handleTrain(socket.data.playerId, order ?? {}));
-  socket.on('game:farm', (order) => lobby.roomOf(socket)?.handleFarm(socket.data.playerId, order ?? {}));
+  socket.on('game:farm', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'farm', order ?? {}));
   socket.on('game:reseed', (order) => lobby.roomOf(socket)?.handleReseed(socket.data.playerId, order ?? {}));
   socket.on('game:research', (order) => lobby.roomOf(socket)?.handleResearch(socket.data.playerId, order ?? {}));
-  socket.on('game:attack', (order) => lobby.roomOf(socket)?.handleAttack(socket.data.playerId, order ?? {}));
+  socket.on('game:attack', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'attack', order ?? {}));
+  socket.on('game:wall', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'wall', order ?? {}));
+  socket.on('game:ageup', (order) => lobby.roomOf(socket)?.handleAgeUp(socket.data.playerId, order ?? {}));
 
   socket.on('disconnect', () => {
     // Another tab/socket of the same player may still be connected

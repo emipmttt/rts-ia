@@ -50,22 +50,32 @@ function createPerlin(rng) {
 // Tuning
 const NOISE_SCALE = 0.07;
 const ROAD_WIDTH = 0.045; // |height| below this = sand road (the noise "valleys"); purely cosmetic
-const SPAWN_CLEAR_RADIUS = 7; // tiles kept free of trees around each town center (room to build)
-// Every base gets exactly the same resources around it, so starts are fair
-const BASE_TREES = 64;
-const BASE_FOREST_ANGLE = 1.25; // radians // two forests, this far to either side of the direction to the map centre
-const BASE_FOREST_DISTANCE = 9.5; // tiles from the town center to each forest's middle
-const BASE_GOLD_MINES = 2;
-const BASE_STONE_MINES = 1;
-const BASE_SHEEP = 8;
+const SPAWN_CLEAR_RADIUS = 13; // tiles kept free of forests around each town center's middle (room to build)
+// Every base gets exactly the same resources around it, so starts are fair (amounts like Age of
+// Empires' standard land maps, distances from the town center's middle; it is 7 tiles wide)
+const BASE_WOODLINES = [
+  { trees: 54, angle: 2.4, distance: 17 }, // main woodline behind the base, a little to one side
+  { trees: 32, angle: -1.5, distance: 16 }, // a smaller one to the other side
+];
+const STRAGGLER_TREES = 4; // lone trees just outside the town center
+const BASE_MINES = [
+  { type: 'gold', tiles: 7, angle: -0.7, distance: 11.5 }, // main gold
+  { type: 'stone', tiles: 5, angle: 0.8, distance: 12.5 }, // main stone
+  { type: 'gold', tiles: 4, angle: 0.15, distance: 21 }, // second gold, toward the middle
+  { type: 'stone', tiles: 4, angle: -1.9, distance: 19 }, // second stone, off to the side
+];
+const BASE_SHEEP = 8; // around the town center
+const FAR_SHEEP_PAIRS = 2; // further out
 // Neutral resources between the bases, scaled with the map area (per 1000 tiles)
-const FOREST_CLUMPS_PER_1000 = 3;
-const CLUMP_TREES = [8, 18]; // min, max
-const GOLD_MINES_PER_1000 = 4;
-const STONE_MINES_PER_1000 = 3;
-const SHEEP_PER_1000 = 7;
-const BUSHES_PER_1000 = 10;
-const NEUTRAL_MIN_DISTANCE = 13; // neutral resources stay this far from bases and the centre
+const BORDER_FOREST = 6; // tiles from the map edge where the border forest grows (in noisy bands)
+const FOREST_CLUMPS_PER_1000 = 1.8;
+const CLUMP_TREES = [20, 45]; // min, max
+const GOLD_PILES_PER_1000 = 0.45;
+const STONE_PILES_PER_1000 = 0.35;
+const PILE_TILES = [4, 6];
+const SHEEP_PER_1000 = 1.5;
+const BUSHES_PER_1000 = 8;
+const NEUTRAL_MIN_DISTANCE = 24; // neutral resources stay this far from bases and the centre
 // Rivers: one running across the map and one running down it, between the bases and the centre,
 // crossable only over their bridges
 const RIVER_WIDTH = 2;
@@ -193,54 +203,87 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
     return placed;
   };
 
-  // Mines are 2x2 tile clusters on dry, empty ground
-  const placeMine = (type, tx, ty) => {
-    const cells = [[tx, ty], [tx + 1, ty], [tx, ty + 1], [tx + 1, ty + 1]];
-    if (!cells.every(([x, y]) => x >= 1 && y >= 1 && x < size - 1 && y < size - 1 && isFree(x, y))) return false;
-    if (cells.some(([x, y]) => nearBridge.has(`${x},${y}`) || distToClear(x, y) <= SPAWN_CLEAR_RADIUS - 1)) return false;
+  // A compact cluster of `count` mine tiles grown from (tx, ty) on dry, empty ground; placed only if
+  // it fits whole. `minClear` keeps it that far from every base and the centre
+  const placeMine = (type, tx, ty, count, minClear) => {
+    const ok = (x, y) => x >= 1 && y >= 1 && x < size - 1 && y < size - 1 && isFree(x, y)
+      && !nearBridge.has(`${x},${y}`) && distToClear(x, y) > minClear;
+    if (!ok(tx, ty)) return null;
+    const cells = [[tx, ty]];
+    const seen = new Set([`${tx},${ty}`]);
+    while (cells.length < count) {
+      // The free neighbour closest to the seed
+      let best = null, bestD = Infinity;
+      for (const [x, y] of cells)
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy, key = `${nx},${ny}`;
+          if (seen.has(key) || !ok(nx, ny)) continue;
+          const d = Math.hypot(nx - tx, ny - ty) + rng() * 0.3;
+          if (d < bestD) { bestD = d; best = [nx, ny]; }
+        }
+      if (!best) return null;
+      seen.add(best.join(','));
+      cells.push(best);
+    }
     for (const [x, y] of cells) {
       tiles[y * size + x] = Terrain.GRASS;
       addResource(type, x, y);
     }
-    return true;
+    return cells;
   };
 
   // ---- Fair resources around every base ----
   const center = size / 2;
+  const minesPlaced = BASE_MINES.map(() => []); // per mine: the cells placed for each base
   spawnTiles.forEach((s, index) => {
     base = index;
     const toCenter = Math.atan2(center - s.ty, center - s.tx);
     const at = (angle, d) => [Math.round(s.tx + Math.cos(angle) * d), Math.round(s.ty + Math.sin(angle) * d)];
 
-    // Two forests of exactly BASE_TREES / 2 trees each
-    for (const side of [-1, 1]) {
-      const [fx, fy] = at(toCenter + side * BASE_FOREST_ANGLE, BASE_FOREST_DISTANCE);
-      growPatch(fx, fy, BASE_TREES / 2, (x, y) => addResource(ResourceType.WOOD, x, y));
+    for (const { trees, angle, distance } of BASE_WOODLINES) {
+      const [fx, fy] = at(toCenter + angle, distance);
+      growPatch(fx, fy, trees, (x, y) => addResource(ResourceType.WOOD, x, y));
     }
-
-    // Mines in front of the base, between the two forests (behind and beside a corner base is the map
-    // edge), each nudged until it lands on free ground: gold left and right, stone further ahead
-    const mines = [
-      [ResourceType.GOLD, toCenter - 0.5, 7.5], [ResourceType.GOLD, toCenter + 0.5, 7.5],
-      [ResourceType.STONE, toCenter, 10],
-    ].slice(0, BASE_GOLD_MINES + BASE_STONE_MINES);
-    for (const [type, angle, distance] of mines) {
-      for (let tries = 0; tries < 80; tries++) {
-        const [mx, my] = at(angle + (((tries % 9) - 4) * 0.15), distance + Math.floor(tries / 9) * 0.6);
-        if (placeMine(type, mx - 1, my - 1)) break;
+    // A few lone trees right outside the town center, toward the back
+    for (let i = 0, placed = 0; i < 24 && placed < STRAGGLER_TREES; i++) {
+      const [x, y] = at(toCenter + Math.PI + (i % 6 - 2.5) * 0.45, 6.5 + Math.floor(i / 6));
+      if (isFree(x, y) && !nearBridge.has(`${x},${y}`)) { addResource(ResourceType.WOOD, x, y); placed++; }
+    }
+    // Mines, each nudged around its spot (sweeping sideways, then further out) until the whole
+    // cluster fits
+    BASE_MINES.forEach(({ type, tiles: count, angle, distance }, m) => {
+      for (let tries = 0; tries < 300; tries++) {
+        const sweep = tries % 15, side = sweep % 2 ? 1 : -1;
+        const [mx, my] = at(toCenter + angle + side * Math.ceil(sweep / 2) * 0.12, distance + Math.floor(tries / 15) * 0.6);
+        const cells = placeMine(type, mx, my, count, 9);
+        if (cells) { minesPlaced[m][index] = cells; break; }
       }
-    }
-
-    // Sheep grazing next to the town center
+    });
+    // Sheep grazing around the town center, two pairs further out
     let sheep = 0;
-    for (let d = 3; d < 7 && sheep < BASE_SHEEP; d++) {
+    for (let d = 6; d < 11 && sheep < BASE_SHEEP; d++) {
       for (let k = 0; k < 12 && sheep < BASE_SHEEP; k++) {
         const [x, y] = at(toCenter + Math.PI / 2 + (k / 12) * Math.PI * 2, d);
         if (isFree(x, y) && !nearBridge.has(`${x},${y}`)) { addResource(ResourceType.FOOD, x, y, 'sheep'); sheep++; }
       }
     }
+    for (let pair = 0; pair < FAR_SHEEP_PAIRS; pair++) {
+      for (let tries = 0; tries < 40; tries++) {
+        const [x, y] = at(toCenter + (pair ? 1.3 : -1.3) + (tries % 5) * 0.1, 22 + Math.floor(tries / 5));
+        if (isFree(x, y) && isFree(x + 1, y) && !nearBridge.has(`${x},${y}`)) {
+          addResource(ResourceType.FOOD, x, y, 'sheep');
+          addResource(ResourceType.FOOD, x + 1, y, 'sheep');
+          break;
+        }
+      }
+    }
   });
   base = null;
+  // A mine that didn't fit at every base is taken away from all of them, so starts stay equal
+  for (const placed of minesPlaced) {
+    if (spawnTiles.every((_, i) => placed[i])) continue;
+    for (const cells of placed) for (const [x, y] of cells ?? []) resourceAt.delete(`${x},${y}`);
+  }
 
   // ---- Neutral resources ----
   const far = (tx, ty) => distToClear(tx, ty) >= NEUTRAL_MIN_DISTANCE;
@@ -250,12 +293,21 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
       if (far(tx, ty) && place(tx, ty)) placed++;
     }
   };
+  // Border forest: thick along the edges, broken into bands by noise, never near a base
+  for (let ty = 0; ty < size; ty++)
+    for (let tx = 0; tx < size; tx++) {
+      const edge = Math.min(tx, ty, size - 1 - tx, size - 1 - ty);
+      if (edge >= BORDER_FOREST) continue;
+      const n = noise(tx * 0.13 + 50, ty * 0.13 + 50);
+      if (n > -0.15 + edge * 0.06 && canGrow(tx, ty) && distToClear(tx, ty) > SPAWN_CLEAR_RADIUS + 4) addResource(ResourceType.WOOD, tx, ty);
+    }
   scatter(per1000(FOREST_CLUMPS_PER_1000), (tx, ty) => {
     const trees = CLUMP_TREES[0] + Math.floor(rng() * (CLUMP_TREES[1] - CLUMP_TREES[0]));
     return growPatch(tx, ty, trees, (x, y) => addResource(ResourceType.WOOD, x, y), (x, y) => canGrow(x, y) && far(x, y)) > 0;
   });
-  scatter(per1000(GOLD_MINES_PER_1000), (tx, ty) => placeMine(ResourceType.GOLD, tx, ty));
-  scatter(per1000(STONE_MINES_PER_1000), (tx, ty) => placeMine(ResourceType.STONE, tx, ty));
+  const pile = () => PILE_TILES[0] + Math.floor(rng() * (PILE_TILES[1] - PILE_TILES[0] + 1));
+  scatter(per1000(GOLD_PILES_PER_1000), (tx, ty) => placeMine(ResourceType.GOLD, tx, ty, pile(), NEUTRAL_MIN_DISTANCE));
+  scatter(per1000(STONE_PILES_PER_1000), (tx, ty) => placeMine(ResourceType.STONE, tx, ty, pile(), NEUTRAL_MIN_DISTANCE));
   const onOpenGrass = (tx, ty) => isFree(tx, ty) && tileAt(tx, ty) === Terrain.GRASS && !nearBridge.has(`${tx},${ty}`);
   scatter(per1000(SHEEP_PER_1000), (tx, ty) => onOpenGrass(tx, ty) && (addResource(ResourceType.FOOD, tx, ty, 'sheep'), true));
   for (let placed = 0, tries = 0; placed < per1000(BUSHES_PER_1000) && tries < 5000; tries++) {

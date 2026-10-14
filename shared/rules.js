@@ -36,3 +36,17 @@ export function canPlace(type, tx, ty, isBlocked, mapTiles) {
 export const canAfford = (stock, cost) => Object.entries(cost).every(([k, v]) => (stock?.[k] ?? 0) >= v);
 
 export const formatCost = (cost) => Object.entries(cost).map(([k, v]) => `${v} ${RESOURCE_NAMES[k] ?? k}`).join(', ');
+
+// Top-left tiles of the pieces of a wall dragged from (x0, y0) to (x1, y1): pieces `step` tiles wide
+// joined side to side in an 8-connected line (diagonal steps touch at the corners, which units can't
+// squeeze through), at most `max` pieces
+export function wallLine(x0, y0, x1, y1, max = 20, step = 2) {
+  const cells = [];
+  const ex = Math.round((x1 - x0) / step), ey = Math.round((y1 - y0) / step);
+  const n = Math.max(Math.abs(ex), Math.abs(ey));
+  for (let i = 0; i <= n && cells.length < max; i++) {
+    const t = n ? i / n : 0;
+    cells.push([x0 + step * Math.round(ex * t), y0 + step * Math.round(ey * t)]);
+  }
+  return cells.filter(([x, y], i) => i === 0 || x !== cells[i - 1][0] || y !== cells[i - 1][1]);
+}

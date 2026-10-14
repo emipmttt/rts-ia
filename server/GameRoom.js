@@ -1,10 +1,10 @@
 import {
   TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, STARTING_VILLAGERS, STARTING_STOCK,
   MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, CIVILIZATIONS, EntityType, ENTITY_STATS, unitStats, RESOURCE_STATS, MAX_POPULATION,
-  Terrain, ResourceType, mapTilesFor, SCORE, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP,
+  Terrain, ResourceType, mapTilesFor, SCORE, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP, AGES,
 } from '../shared/constants.js';
 import {
-  isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford,
+  isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford, wallLine,
 } from '../shared/rules.js';
 import { assignSpawns } from './spawns.js';
 import { generateWorld } from './worldgen.js';
@@ -12,7 +12,8 @@ import { findPath, clearLine } from './pathfinding.js';
 
 const DT = 1 / TICK_RATE;
 const RETARGET_RADIUS = 400; // how far a villager looks for more of the same resource
-const STUCK_TICKS = TICK_RATE * 2; // a gatherer that gets no closer for this long picks another resource
+const STUCK_TICKS = TICK_RATE * 4; // a gatherer that can't move toward its resource this long picks another one
+const WORKING_SLACK = 14; // px a gatherer already working a resource may be shoved away and keep at it
 const NEXT_CONSTRUCTION_RADIUS = 900; // a builder done with a building looks this far for the next one
 const CROWD_PENALTY = 60; // px a resource counts as farther away per villager already working it
 const SEPARATION_CELL = 32; // grid cell size for unit collision lookups (>= largest unit diameter)
@@ -30,6 +31,19 @@ const isSheep = (r) => r.variant === 'sheep';
 const bodyOf = (u) => (isSheep(u) ? SHEEP : ENTITY_STATS[u.type]);
 const FLAG_MAX_LENGTH = 40000; // data URL of the player's hand-drawn flag
 const SHEEP_CHECK_TICKS = 10; // how often sheep look for nearby units to follow
+const CHEER_TIME = 0.9; // seconds a soldier spends shouting and waving before charging into a fight
+const CHEER_COOLDOWN = TICK_RATE * 10; // it only does it again after this long
+const FORMATION_SPACING = 34; // px between soldiers in a marching formation
+// Formation ranks from the front: shields and blades, then riders, then everything that shoots, monks last
+const FORMATION_RANK = { spearman: 0, swordsman: 1, guard: 1, villager: 4, horseman: 2, bowman: 3, archer: 3, monk: 4 };
+const BUILDING_OVERHANG = 1.06;
+const FRONT = Math.PI / 2; // buildings face +y (south, toward the default camera): their doors are there // the 3D models are a little wider than their footprint
+const BUILDING_CELL = 2; // walkBlocked value of a building's tile (1 = water, tree or mine)
+// Unit orders a client may send, and the method handling each
+const ORDER_HANDLERS = {
+  move: 'handleMove', gather: 'handleGather', build: 'handleBuild', wall: 'handleWall', construct: 'handleConstruct', farm: 'handleFarm', attack: 'handleAttack',
+};
+const ARRIVE_MARGIN = 22; // px from a building's walls that count as having reached it (any tile around it)
 
 export const RoomStatus = { WAITING: 'waiting', PLAYING: 'playing', FINISHED: 'finished' };
 
@@ -52,7 +66,10 @@ export class GameRoom {
     this.buildingTiles = new Map(); // "tx,ty" -> buildingId
     this.mapTiles = 0; // map side in tiles, set when the game starts (bigger with more players)
     this.mapSize = 0; // map side in px
-    this.walkBlocked = null; // Uint8Array, 1 = water, tree or mine
+    this.walkBlocked = null; // Uint8Array, 1 = water, tree or mine, 2 = building (not farms)
+    this.gridVersion = 0; // bumped whenever a building appears or goes, so paths get recomputed
+    this.gateTiles = new Map(); // tile index -> owner of the gate standing there
+    this.ownerGrids = new Map(); // owner -> walkBlocked with that player's own gates open
     this.tickCount = 0;
     this.emptySince = null; // when the last player of a running game lost connection
     this.resourceChanges = new Map(); // resourceId -> new amount (0 = depleted), flushed each tick
@@ -119,6 +136,7 @@ export class GameRoom {
       id: playerId, name, faction: faction.id, color: faction.color, civ: CIVILIZATIONS[0].id, stock: { ...STARTING_STOCK }, defeated: false,
       connected: true, pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
       gatherLevel: 0, // lumber camp upgrades researched
+      age: 1, // 1..AGES.length
       flag: typeof flag === 'string' && flag.startsWith('data:image/png;base64,') && flag.length <= FLAG_MAX_LENGTH ? flag : null,
     });
     this.broadcastRoom();
@@ -165,21 +183,34 @@ export class GameRoom {
   }
 
   // The neutral central town center and the knights guarding it
+  // The neutral fortress in the middle of the map, held by a garrison of a civilization picked at
+  // random: its spearmen and swordsmen in the outer ring, bowmen and its elementalists behind
   spawnCentral(mapCenter) {
-    const { tx, ty } = tileForCenter(EntityType.TOWN_CENTER, mapCenter.x, mapCenter.y);
-    this.central = this.addBuilding(EntityType.TOWN_CENTER, null, tx, ty, true);
+    const civ = CIVILIZATIONS[Math.floor(Math.random() * CIVILIZATIONS.length)].id;
+    const { tx, ty } = tileForCenter(EntityType.FORTRESS, mapCenter.x, mapCenter.y);
+    this.central = this.addBuilding(EntityType.FORTRESS, null, tx, ty, true);
     this.central.central = true;
+    this.central.civ = civ;
     this.central.controlTime = 0;
     this.central.maxHp = CENTRAL_HP;
     this.central.hp = CENTRAL_HP;
-    // Knights posted in a ring around the central town center
-    for (let i = 0; i < CENTRAL_GUARDS; i++) {
-      const angle = (i / CENTRAL_GUARDS) * Math.PI * 2;
-      const d = buildingSize(EntityType.TOWN_CENTER) / 2 + 45;
-      const guard = this.addUnit(EntityType.GUARD, null, mapCenter.x + Math.cos(angle) * d, mapCenter.y + Math.sin(angle) * d);
-      guard.post = { x: guard.x, y: guard.y };
+    const rings = [
+      [[EntityType.SPEARMAN, EntityType.SWORDSMAN], CENTRAL_GUARDS + 2, 50],
+      [[EntityType.BOWMAN, EntityType.ARCHER], CENTRAL_GUARDS - 1, 95],
+    ];
+    for (const [types, count, gap] of rings) {
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2 + gap * 0.01;
+        const d = this.outside(this.central, angle, 12) + gap;
+        const guard = this.addUnit(types[i % types.length], null, mapCenter.x + Math.cos(angle) * d, mapCenter.y + Math.sin(angle) * d);
+        guard.civ = civ;
+        guard.post = { x: guard.x, y: guard.y };
+      }
     }
   }
+
+  // A unit's civilization: its owner's, or its own for the neutral garrison
+  civOf(u) { return u.civ ?? this.players.get(u.owner)?.civ; }
 
   // Everything a client needs to draw the game from scratch (at the start, or after reconnecting)
   startPayload() {
@@ -253,27 +284,72 @@ export class GameRoom {
       research: null, // lumber camps only: { level, progress }
     };
     for (const [cx, cy] of footprint(type, tx, ty)) this.buildingTiles.set(tileKey(cx, cy), id);
+    this.setBuildingCells(building, true);
     this.entities.set(id, building);
     return building;
   }
 
+  // Buildings are obstacles for walking and pathfinding, except farms (their fields are worked on foot)
+  // and, for their owner, gates
+  setBuildingCells(b, solid) {
+    if (!this.walkBlocked || ENTITY_STATS[b.type].farm) return;
+    for (const [cx, cy] of footprint(b.type, b.tx, b.ty)) {
+      if (cx < 0 || cy < 0 || cx >= this.mapTiles || cy >= this.mapTiles) continue;
+      const i = cy * this.mapTiles + cx;
+      if (ENTITY_STATS[b.type].gate) {
+        if (solid) this.gateTiles.set(i, b.owner);
+        else this.gateTiles.delete(i);
+      }
+      if (solid && !this.walkBlocked[i]) this.setCell(i, BUILDING_CELL);
+      else if (!solid && this.walkBlocked[i] === BUILDING_CELL) this.setCell(i, 0);
+    }
+    this.gridVersion++;
+  }
+
+  // Changes a tile of the walk grid, and of every player's copy of it
+  setCell(i, v) {
+    this.walkBlocked[i] = v;
+    for (const [owner, grid] of this.ownerGrids) grid[i] = v && this.gateTiles.get(i) === owner ? 0 : v;
+  }
+
+  // The walk grid as `owner`'s units see it: the same, with their own gates open
+  gridFor(owner) {
+    if (!owner || ![...this.gateTiles.values()].includes(owner)) return this.walkBlocked;
+    let grid = this.ownerGrids.get(owner);
+    if (!grid) {
+      grid = this.walkBlocked.slice();
+      for (const [i, o] of this.gateTiles) if (o === owner) grid[i] = 0;
+      this.ownerGrids.set(owner, grid);
+    }
+    return grid;
+  }
+
   removeEntity(e) {
     this.entities.delete(e.id);
-    if (isBuilding(e)) for (const [cx, cy] of footprint(e.type, e.tx, e.ty)) this.buildingTiles.delete(tileKey(cx, cy));
+    if (isBuilding(e)) {
+      for (const [cx, cy] of footprint(e.type, e.tx, e.ty)) this.buildingTiles.delete(tileKey(cx, cy));
+      this.setBuildingCells(e, false);
+    }
   }
 
   isTileBlocked = (x, y) => this.resourceTiles.has(tileKey(x, y)) || this.buildingTiles.has(tileKey(x, y))
     || this.world.tiles[y * this.mapTiles + x] === Terrain.WATER || this.world.tiles[y * this.mapTiles + x] === Terrain.BRIDGE;
 
-  // Town center at the spawn point, villagers placed on the side facing the map centre
+  // Distance from a building's middle, along `angle`, to just past its walls (the square footprint
+  // reaches further toward the corners; the 3D models overhang it a little)
+  outside(b, angle, radius) {
+    const half = this.bodyRadius(b);
+    return half / Math.max(Math.abs(Math.cos(angle)), Math.abs(Math.sin(angle))) + radius + 12;
+  }
+
+  // Town center at the spawn point, villagers placed in front of it
   spawnPlayer(owner, point) {
     const { tx, ty } = tileForCenter(EntityType.TOWN_CENTER, point.x, point.y);
     const tc = this.addBuilding(EntityType.TOWN_CENTER, owner, tx, ty, true);
 
-    const toCenter = Math.atan2(this.mapSize / 2 - tc.y, this.mapSize / 2 - tc.x);
-    const distance = buildingSize(tc.type) / 2 + 30;
     for (let i = 0; i < STARTING_VILLAGERS; i++) {
-      const angle = toCenter + (i - (STARTING_VILLAGERS - 1) / 2) * 0.5;
+      const angle = FRONT + (i - (STARTING_VILLAGERS - 1) / 2) * 0.35;
+      const distance = this.outside(tc, angle, ENTITY_STATS[EntityType.VILLAGER].radius);
       this.addUnit(EntityType.VILLAGER, owner, tc.x + Math.cos(angle) * distance, tc.y + Math.sin(angle) * distance);
     }
   }
@@ -289,16 +365,34 @@ export class GameRoom {
     return this.ownedUnits(playerId, unitIds).filter((u) => u.type === EntityType.VILLAGER);
   }
 
+  // Units sent somewhere together march in formation: rows facing the way they go, shields and blades
+  // in front, riders behind them, archers and casters after, monks last; the whole group keeps to its
+  // slowest member's pace so it arrives together
   handleMove(playerId, { unitIds, x, y }) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const units = this.ownedUnits(playerId, unitIds);
-    const cols = Math.ceil(Math.sqrt(units.length));
-    units.forEach((u, i) => {
-      u.task = null;
-      delete u.resumeTask;
-      u.tx = clamp(x + (i % cols) * 30 - cols * 15, 0, this.mapSize);
-      u.ty = clamp(y + Math.floor(i / cols) * 30 - cols * 15, 0, this.mapSize);
-    });
+    if (!units.length) return;
+    const cx = units.reduce((s, u) => s + u.x, 0) / units.length;
+    const cy = units.reduce((s, u) => s + u.y, 0) / units.length;
+    const len = Math.hypot(x - cx, y - cy) || 1;
+    const fx = (x - cx) / len, fy = (y - cy) / len; // facing
+    const sx = -fy, sy = fx; // across the rows
+    const width = Math.max(1, Math.round(Math.sqrt(units.length * 1.8)));
+    const ranked = [...units].sort((a, b) => (FORMATION_RANK[a.type] ?? 2) - (FORMATION_RANK[b.type] ?? 2));
+    const slowest = units.length > 1 ? Math.min(...units.map((u) => this.speedOf(u))) : null;
+    for (let row = 0; row * width < ranked.length; row++) {
+      // Within a row, units take the slots on the side they already stand on, so nobody crosses
+      const members = ranked.slice(row * width, (row + 1) * width).sort((a, b) => (a.x * sx + a.y * sy) - (b.x * sx + b.y * sy));
+      members.forEach((u, i) => {
+        const across = (i - (members.length - 1) / 2) * FORMATION_SPACING;
+        const back = row * FORMATION_SPACING;
+        u.task = null;
+        delete u.resumeTask;
+        u.tx = clamp(x + sx * across - fx * back, 0, this.mapSize);
+        u.ty = clamp(y + sy * across - fy * back, 0, this.mapSize);
+        u.formationSpeed = slowest;
+      });
+    }
   }
 
   handleGather(playerId, { unitIds, resourceId }) {
@@ -316,16 +410,63 @@ export class GameRoom {
   }
 
   // Place a new building: pays the cost and sends villagers to build it
-  handleBuild(playerId, { type, tx, ty, unitIds }) {
+  // An order from a client. With `queue` (Shift held, like in Age of Empires) units busy with
+  // something keep it for when they finish (a move arrives, a resource runs out, a building is done,
+  // a target dies); idle ones start right away. Without it, it replaces whatever they had queued.
+  order(playerId, kind, o) {
+    const handler = ORDER_HANDLERS[kind];
+    if (!handler || this.status !== RoomStatus.PLAYING) return;
+    const units = this.ownedUnits(playerId, o.unitIds);
+    if (!o.queue) {
+      for (const u of units) u.orders = [];
+      this[handler](playerId, o);
+      return;
+    }
+    const busy = units.filter((u) => u.task || u.orders?.length || Math.hypot(u.tx - u.x, u.ty - u.y) > 8);
+    const free = units.filter((u) => !busy.includes(u)).map((u) => u.id);
+    if (kind === 'build' || kind === 'wall') {
+      // The foundations go down now; the busy villagers queue their construction
+      const placed = this[handler](playerId, { ...o, unitIds: free, onlyThese: true });
+      const first = Array.isArray(placed) ? placed[0] : placed;
+      if (first) for (const u of busy) this.queueOrder(u, 'construct', { buildingId: first.id }, first);
+      return;
+    }
+    if (free.length) this[handler](playerId, { ...o, unitIds: free });
+    const at = kind === 'move' ? { x: o.x, y: o.y }
+      : kind === 'gather' ? this.resources.get(o.resourceId)
+      : this.entities.get(o.targetId ?? o.buildingId);
+    for (const u of busy) this.queueOrder(u, kind, o, at);
+  }
+
+  // `at`: where the order leads, shown to the player as a waypoint
+  queueOrder(u, kind, order, at) {
+    (u.orders ??= []).push({ kind, order: { ...order, unitIds: [u.id], queue: false }, x: at?.x ?? u.x, y: at?.y ?? u.y });
+  }
+
+  // Starts the unit's next queued order; false when it has none
+  nextOrder(u) {
+    const next = u.orders?.shift();
+    if (!next) return false;
+    this[ORDER_HANDLERS[next.kind]](u.owner, next.order);
+    return true;
+  }
+
+  handleBuild(playerId, { type, tx, ty, unitIds, onlyThese }) {
     const player = this.players.get(playerId);
     if (!player || this.status !== RoomStatus.PLAYING || !isBuildingType(type)) return;
     if (!Number.isInteger(tx) || !Number.isInteger(ty)) return;
     const { cost } = ENTITY_STATS[type];
+    if (!this.hasAge(player, type)) return;
     if (!canAfford(player.stock, cost)) return this.error(playerId, 'Recursos insuficientes');
+    // A gate can take the place of one of our own wall pieces (any of its tiles), right where it stood
+    const wall = ENTITY_STATS[type].gate && footprint(type, tx, ty)
+      .map(([x, y]) => this.entities.get(this.buildingTiles.get(tileKey(x, y))))
+      .find((w) => w && w.owner === playerId && ENTITY_STATS[w.type].wall);
+    if (wall) { ({ tx, ty } = wall); this.removeEntity(wall); }
     if (!canPlace(type, tx, ty, this.isTileBlocked, this.mapTiles)) return this.error(playerId, 'No se puede construir ahí');
 
     let builders = this.ownedVillagers(playerId, unitIds);
-    if (!builders.length) {
+    if (!builders.length && !onlyThese) {
       // No villagers selected: pull the closest one off whatever it is doing
       const { x, y } = buildingCenter(type, tx, ty);
       const closest = this.closest([...this.entities.values()].filter(
@@ -338,6 +479,67 @@ export class GameRoom {
     for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
     const building = this.addBuilding(type, playerId, tx, ty, false);
     for (const u of builders) this.assignBuild(u, building.id);
+    return building;
+  }
+
+  // True when the player has reached the age a building or unit needs (tells them otherwise)
+  hasAge(player, type) {
+    const age = ENTITY_STATS[type].age ?? 1;
+    if (player.age >= age) return true;
+    this.error(player.id, `Requiere la ${AGES[age - 1].name}`);
+    return false;
+  }
+
+  // A line of wall foundations from (tx0, ty0) to (tx1, ty1), straight or diagonal; tiles already
+  // taken are skipped, and it stops when the stone runs out. Returns the foundations placed.
+  handleWall(playerId, { tx0, ty0, tx1, ty1, unitIds, onlyThese }) {
+    const player = this.players.get(playerId);
+    if (!player || this.status !== RoomStatus.PLAYING) return [];
+    if (![tx0, ty0, tx1, ty1].every(Number.isInteger) || !this.hasAge(player, EntityType.WALL)) return [];
+    const { cost } = ENTITY_STATS[EntityType.WALL];
+    const placed = [];
+    for (const [x, y] of wallLine(tx0, ty0, tx1, ty1)) {
+      if (!canPlace(EntityType.WALL, x, y, this.isTileBlocked, this.mapTiles)) continue;
+      if (!canAfford(player.stock, cost)) { this.error(playerId, 'No alcanza la piedra para todo el muro'); break; }
+      for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
+      placed.push(this.addBuilding(EntityType.WALL, playerId, x, y, false));
+    }
+    if (!placed.length) return placed;
+    let builders = this.ownedVillagers(playerId, unitIds);
+    if (!builders.length && !onlyThese) {
+      const closest = this.closest([...this.entities.values()].filter((e) => e.owner === playerId && e.type === EntityType.VILLAGER), placed[0].x, placed[0].y);
+      builders = closest ? [closest] : [];
+    }
+    // Each builder starts on the closest piece; the rest are picked up as pieces get finished
+    for (const u of builders) this.assignBuild(u, this.closest(placed, u.x, u.y).id);
+    return placed;
+  }
+
+  // Advance to the next age at a town center: paid up front; the town center trains nothing meanwhile
+  handleAgeUp(playerId, { buildingId }) {
+    const player = this.players.get(playerId);
+    const tc = this.entities.get(buildingId);
+    if (!player || !tc || tc.owner !== playerId || tc.type !== EntityType.TOWN_CENTER || !tc.built) return;
+    if (this.status !== RoomStatus.PLAYING) return;
+    const next = AGES[player.age];
+    if (!next) return this.error(playerId, 'Ya estás en la última edad');
+    if ([...this.entities.values()].some((e) => e.owner === playerId && e.ageUp)) return this.error(playerId, 'Ya estás avanzando de edad');
+    if (!canAfford(player.stock, next.cost)) return this.error(playerId, 'Recursos insuficientes');
+    for (const [k, v] of Object.entries(next.cost)) player.stock[k] -= v;
+    tc.ageUp = { to: player.age + 1, progress: 0 };
+  }
+
+  updateAgeUp(b) {
+    if (!b.ageUp) return;
+    b.ageUp.progress += DT / AGES[b.ageUp.to - 1].time;
+    if (b.ageUp.progress < 1) return;
+    const player = this.players.get(b.owner);
+    const { to } = b.ageUp;
+    b.ageUp = null;
+    if (!player || player.age >= to) return;
+    player.age = to;
+    this.io.to(this.id).emit('game:ageup', { playerId: player.id, age: to });
+    this.notice(`¡${player.name} avanzó a la ${AGES[to - 1].name}!`);
   }
 
   // A villager pulled off gathering/farming to build remembers that job and goes back to it
@@ -429,13 +631,16 @@ export class GameRoom {
     }
   }
 
-  // Queue a unit in a finished building, paying its cost up front
-  handleTrain(playerId, { buildingId }) {
+  // Queue a unit in a finished building, paying its cost up front; `type` picks one of the units the
+  // building trains (the first by default)
+  handleTrain(playerId, { buildingId, type }) {
     const player = this.players.get(playerId);
     const building = this.entities.get(buildingId);
     if (!player || !building || building.owner !== playerId || !isBuilding(building) || !building.built) return;
-    const unitType = ENTITY_STATS[building.type].trains;
-    if (!unitType) return;
+    const trains = ENTITY_STATS[building.type].trains ?? [];
+    const unitType = type ?? trains[0];
+    if (!trains.includes(unitType) || !this.hasAge(player, unitType)) return;
+    if (building.ageUp) return this.error(playerId, 'El centro urbano está avanzando de edad');
     if (building.queue.length >= MAX_TRAIN_QUEUE) return this.error(playerId, 'La cola está llena');
     const { cost } = ENTITY_STATS[unitType];
     this.updatePopulation(player);
@@ -495,22 +700,24 @@ export class GameRoom {
 
     // Straight line when nothing is in the way, otherwise follow an A* path (recomputed when the goal tile changes)
     let wp = { x, y };
-    if (!clearLine(this.walkBlocked, u.x, u.y, x, y, r, ignore)) {
-      if (!u.path || u.path.goal !== goal || (!u.path.points.length && this.tickCount - u.path.tick >= REPATH_TICKS)) {
+    const grid = this.gridFor(u.owner);
+    if (!clearLine(grid, u.x, u.y, x, y, r, ignore)) {
+      if (!u.path || u.path.goal !== goal || u.path.version !== this.gridVersion
+        || (!u.path.points.length && this.tickCount - u.path.tick >= REPATH_TICKS)) {
         const sx = clamp(Math.floor(u.x / TILE_SIZE), 0, this.mapTiles - 1);
         const sy = clamp(Math.floor(u.y / TILE_SIZE), 0, this.mapTiles - 1);
-        u.path = { goal, tick: this.tickCount, ...findPath(this.walkBlocked, sx, sy, gx, gy, ignore === goal) };
+        u.path = { goal, tick: this.tickCount, version: this.gridVersion, ...findPath(grid, sx, sy, gx, gy, ignore === goal) };
       }
       const pts = u.path.points;
       // Drop reached waypoints, and skip ahead whenever the next one is already in plain sight
       while (pts.length && Math.hypot(pts[0].x - u.x, pts[0].y - u.y) < 4) pts.shift();
-      while (pts.length > 1 && clearLine(this.walkBlocked, u.x, u.y, pts[1].x, pts[1].y, r, ignore)) pts.shift();
+      while (pts.length > 1 && clearLine(grid, u.x, u.y, pts[1].x, pts[1].y, r, ignore)) pts.shift();
       if (!pts.length) {
         if (u.path.partial) { u.unreachable = true; u.action = 'idle'; return false; }
       } else if (pts.length > 1 || u.path.partial) wp = pts[0];
     }
 
-    const step = bodyOf(u).speed * DT;
+    const step = this.speedOf(u) * DT;
     const final = wp.x === x && wp.y === y;
     const dx = wp.x - u.x;
     const dy = wp.y - u.y;
@@ -520,6 +727,56 @@ export class GameRoom {
     u.x += dx * k;
     u.y += dy * k;
     return final && remaining <= step;
+  }
+
+  // Walks up to a building: around obstacles to the free tile beside its footprint closest to the
+  // unit. True once the body is within `extra` px of its walls (corners included)
+  moveToBuilding(u, b, extra = ARRIVE_MARGIN) {
+    const reached = () => this.wallDistance(u, b) <= bodyOf(u).radius + extra;
+    if (reached()) { u.path = null; return true; }
+    const p = this.approachPoint(u, b);
+    this.moveToward(u, p.x, p.y, 0);
+    return reached();
+  }
+
+  // Distance from a point to a building's footprint (plus model overhang); 0 inside it
+  wallDistance(u, b) {
+    const half = this.bodyRadius(b);
+    return Math.hypot(Math.max(0, Math.abs(u.x - b.x) - half), Math.max(0, Math.abs(u.y - b.y) - half));
+  }
+
+  // Middle of a walkable tile in the ring around a building's footprint: the closest to the unit,
+  // preferring the sides to the corners and tiles no other unit is standing on
+  approachPoint(u, b) {
+    const n = ENTITY_STATS[b.type].tiles;
+    const taken = new Set();
+    for (const e of this.entities.values()) {
+      if (e === u || !isUnit(e) || Math.abs(e.x - b.x) > (n + 2) * TILE_SIZE || Math.abs(e.y - b.y) > (n + 2) * TILE_SIZE) continue;
+      taken.add(tileKey(Math.floor(e.x / TILE_SIZE), Math.floor(e.y / TILE_SIZE)));
+    }
+    let best = null;
+    let bestD = Infinity;
+    for (let y = b.ty - 1; y <= b.ty + n; y++) {
+      for (let x = b.tx - 1; x <= b.tx + n; x++) {
+        if (x >= b.tx && x < b.tx + n && y >= b.ty && y < b.ty + n) continue;
+        if (x < 0 || y < 0 || x >= this.mapTiles || y >= this.mapTiles || this.gridFor(u.owner)[y * this.mapTiles + x]) continue;
+        const cx = (x + 0.5) * TILE_SIZE;
+        const cy = (y + 0.5) * TILE_SIZE;
+        const corner = (x === b.tx - 1 || x === b.tx + n) && (y === b.ty - 1 || y === b.ty + n);
+        const d = Math.hypot(cx - u.x, cy - u.y) + (corner ? TILE_SIZE : 0) + (taken.has(tileKey(x, y)) ? TILE_SIZE * 1.5 : 0);
+        if (d < bestD) { bestD = d; best = { x: cx, y: cy }; }
+      }
+    }
+    return best ?? { x: b.x, y: b.y };
+  }
+
+  // Walking speed: the unit's civilization may change it, ice slows it
+  speedOf(u) {
+    if (isSheep(u)) return SHEEP.speed;
+    let { speed } = unitStats(u.type, this.civOf(u));
+    // Marching in formation: no faster than the group's slowest (only on a plain move order)
+    if (u.formationSpeed && !u.task) speed = Math.min(speed, u.formationSpeed);
+    return speed * (u.chill ? u.chill.factor : 1);
   }
 
   // Pushes overlapping units apart so they never stack on top of each other
@@ -564,7 +821,8 @@ export class GameRoom {
       }
       if (!moved) break;
     }
-    for (const u of units) this.pushOutOfTerrain(u);
+    this.solidBuildings = [...this.entities.values()].filter((e) => isBuilding(e) && !ENTITY_STATS[e.type].farm);
+    for (const u of units) { this.pushOutOfBuildings(u); this.pushOutOfTerrain(u); }
     // A unit with a plain move order that got shoved near its destination settles where it is,
     // otherwise idle units would keep walking back into each other forever
     for (const u of pushed) {
@@ -573,14 +831,53 @@ export class GameRoom {
     }
   }
 
-  // Keeps a unit's body out of trees, gold mines and water
+  // Buildings (except farms, whose fields are worked on foot) are solid: a body inside one's footprint
+  // (plus the little the 3D model overhangs it) is pushed back to the wall and slid along it the way it
+  // was walking, so whoever walks into a building goes around it instead of through. It stays just
+  // within reach of the building (bodyRadius) for delivering, building and attacking.
+  pushOutOfBuildings(u) {
+    const r = bodyOf(u).radius;
+    const mx = u.x - (u.prevX ?? u.x);
+    const my = u.y - (u.prevY ?? u.y);
+    for (const b of this.solidBuildings ?? []) {
+      if (ENTITY_STATS[b.type].gate && b.owner === u.owner) continue; // our own gates let us through
+      const half = this.bodyRadius(b) + r - 3;
+      const dx = u.x - b.x;
+      const dy = u.y - b.y;
+      if (Math.abs(dx) >= half || Math.abs(dy) >= half) continue;
+      const px = half - Math.abs(dx);
+      const py = half - Math.abs(dy);
+      // Along the wall: the way it was heading when it walks along it, otherwise round the nearer
+      // corner; kept while it stays against the same wall so it doesn't dither
+      const along = (key, tangent, normal, offset) => {
+        if (u.slide?.key === key && this.tickCount - u.slide.tick <= 3) u.slide.tick = this.tickCount;
+        else u.slide = {
+          key, tick: this.tickCount,
+          dir: Math.abs(tangent) > Math.abs(normal) * 0.6 ? Math.sign(tangent) : Math.sign(offset) || (u.id % 2 ? 1 : -1),
+        };
+        return u.slide.dir;
+      };
+      if (px < py) {
+        u.x = b.x + (Math.sign(dx) || 1) * half;
+        u.y += along(`${b.id}x${Math.sign(dx)}`, my, mx, dy) * Math.min(py, px + 2);
+      } else {
+        u.y = b.y + (Math.sign(dy) || 1) * half;
+        u.x += along(`${b.id}y${Math.sign(dy)}`, mx, my, dx) * Math.min(px, py + 2);
+      }
+      u.x = clamp(u.x, 0, this.mapSize);
+      u.y = clamp(u.y, 0, this.mapSize);
+    }
+  }
+
+  // Keeps a unit's (or sheep's) body out of trees, gold mines and water
   pushOutOfTerrain(u) {
-    const r = ENTITY_STATS[u.type].radius * TERRAIN_RADIUS;
+    const r = bodyOf(u).radius * TERRAIN_RADIUS;
     const cx = Math.floor(u.x / TILE_SIZE);
     const cy = Math.floor(u.y / TILE_SIZE);
+    const grid = this.gridFor(u.owner);
     for (let ty = cy - 1; ty <= cy + 1; ty++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
-        if (tx < 0 || ty < 0 || tx >= this.mapTiles || ty >= this.mapTiles || !this.walkBlocked[ty * this.mapTiles + tx]) continue;
+        if (tx < 0 || ty < 0 || tx >= this.mapTiles || ty >= this.mapTiles || !grid[ty * this.mapTiles + tx]) continue;
         const x0 = tx * TILE_SIZE;
         const y0 = ty * TILE_SIZE;
         const nx = clamp(u.x, x0, x0 + TILE_SIZE);
@@ -608,6 +905,13 @@ export class GameRoom {
     const stats = ENTITY_STATS[u.type];
     let resource = this.resources.get(task.resourceId);
 
+    // Resource gone with more orders queued: drop off what it carries, then on to the next one
+    if (!resource && u.orders?.length) {
+      if (carry.amount > 0) { this.deliverCarry(u); if (carry.amount > 0 && u.task) return; }
+      this.nextOrder(u);
+      return;
+    }
+
     // Resource gone: look for another of the same type nearby
     if (!resource) {
       const sameType = [...this.resources.values()].filter((r) => r.type === task.resourceType && this.isExposed(r)
@@ -628,7 +932,9 @@ export class GameRoom {
       // Someone else's sheep (or not yet ours): walk up to it, which claims it if nobody else is closer
       if (resource.owner) { u.task = null; return; }
     }
-    const reach = isSheep(resource) ? SHEEP.radius + stats.radius + 4 : TILE_SIZE / 2 + stats.radius;
+    // Once working it, being nudged a little by the gatherers around it doesn't stop the work
+    const reach = (isSheep(resource) ? SHEEP.radius + stats.radius + 10 : TILE_SIZE / 2 + stats.radius + 6)
+      + (task.workingOn === resource.id ? WORKING_SLACK : 0);
     if (this.gathererStuck(u, resource, reach)) {
       const other = this.alternativeResource(u, resource);
       if (other) {
@@ -639,6 +945,7 @@ export class GameRoom {
     if (!this.moveToward(u, resource.x, resource.y, reach)) return;
 
     u.action = 'gathering';
+    task.workingOn = resource.id;
     // Switching resource type drops what was being carried, like in AoE
     if (carry.type !== resource.type) {
       carry.type = resource.type;
@@ -655,7 +962,7 @@ export class GameRoom {
     if (resource.amount <= 0) {
       this.resources.delete(resource.id);
       this.resourceTiles.delete(tileKey(resource.tx, resource.ty));
-      if (isSolidResource(resource)) this.walkBlocked[resource.ty * this.mapTiles + resource.tx] = 0;
+      if (isSolidResource(resource)) this.setCell(resource.ty * this.mapTiles + resource.tx, 0);
     }
   }
 
@@ -667,19 +974,25 @@ export class GameRoom {
 
   // True when a gatherer walking to its resource hasn't got any closer for STUCK_TICKS (other villagers
   // in the way, or no path)
+  // A gatherer that can't get to its resource: its path is impossible, or it has barely moved for a
+  // while (crowded out by other gatherers). Walking a detour around a building or a forest still
+  // counts as progress, even when it takes it away from the resource for a bit.
   gathererStuck(u, resource, reach) {
     const { task } = u;
     const dist = Math.hypot(resource.x - u.x, resource.y - u.y);
-    if (task.trackedId !== resource.id || dist <= reach || dist < task.bestDist - 2) {
+    // (+1: moveToward stops right on the edge of the reach, a hair outside it in floating point)
+    if (task.trackedId !== resource.id || dist <= reach + 1) {
       task.trackedId = resource.id;
-      task.bestDist = dist;
+      task.anchor = { x: u.x, y: u.y };
       task.stuckTicks = 0;
       return false;
     }
+    if (u.unreachable) return true;
     if (++task.stuckTicks < STUCK_TICKS) return false;
+    const moved = Math.hypot(u.x - task.anchor.x, u.y - task.anchor.y);
+    task.anchor = { x: u.x, y: u.y };
     task.stuckTicks = 0;
-    task.bestDist = Infinity; // give the new target a fresh start
-    return true;
+    return moved < 12;
   }
 
   // Another reachable resource of the same type nearby, preferring ones fewer villagers are working on
@@ -705,7 +1018,7 @@ export class GameRoom {
   deliverCarry(u) {
     const dropOff = this.closest(this.dropOffsOf(u.owner), u.x, u.y);
     if (!dropOff) { u.task = null; return; }
-    if (!this.moveToward(u, dropOff.x, dropOff.y, buildingSize(dropOff.type) / 2 + ENTITY_STATS[u.type].radius)) return;
+    if (!this.moveToBuilding(u, dropOff)) return;
     const player = this.players.get(u.owner);
     if (player) {
       player.stock[u.carry.type] += u.carry.amount;
@@ -752,6 +1065,7 @@ export class GameRoom {
   updateBuilder(u) {
     const building = this.entities.get(u.task.buildingId);
     if (!building || building.built) {
+      if (this.nextOrder(u)) return;
       // Finished a farm: start working it. Otherwise move on to the closest pending construction.
       if (building?.built && ENTITY_STATS[building.type].farm) { u.task = { type: 'farm', buildingId: building.id }; return; }
       const pending = [...this.entities.values()].filter((e) => isBuilding(e) && e.owner === u.owner && !e.built);
@@ -761,8 +1075,7 @@ export class GameRoom {
       else { u.task = null; u.tx = u.x; u.ty = u.y; }
       return;
     }
-    const reach = buildingSize(building.type) / 2 + ENTITY_STATS[u.type].radius;
-    if (!this.moveToward(u, building.x, building.y, reach)) return;
+    if (!this.moveToBuilding(u, building)) return;
 
     u.action = 'building';
     const stats = ENTITY_STATS[building.type];
@@ -776,26 +1089,88 @@ export class GameRoom {
   }
 
   // Distance from an entity's centre to its edge
-  bodyRadius(e) { return isBuilding(e) ? buildingSize(e.type) / 2 : ENTITY_STATS[e.type].radius; }
+  // How far a body reaches from its middle; buildings count the little their 3D model overhangs
+  bodyRadius(e) { return isBuilding(e) ? (buildingSize(e.type) / 2) * BUILDING_OVERHANG : ENTITY_STATS[e.type].radius; }
 
   updateAttacker(u) {
     const target = this.entities.get(u.task.targetId);
-    if (!target || target.owner === u.owner || (target.central && target.hp <= 0)) { u.task = null; return; }
-    const { attack } = unitStats(u.type, this.players.get(u.owner)?.civ);
-    const reach = attack.range + ENTITY_STATS[u.type].radius + this.bodyRadius(target) + 2;
-    if (!this.moveToward(u, target.x, target.y, reach)) return;
+    if (!target || target.owner === u.owner || (target.central && target.hp <= 0)) {
+      if (!this.nextOrder(u)) u.task = null;
+      return;
+    }
+    const { attack } = unitStats(u.type, this.civOf(u));
+    // Going into a fight: soldiers first stop to shout and wave their banner, then charge
+    if (!u.task.engaged) {
+      u.task.engaged = true;
+      const soldier = u.type !== EntityType.VILLAGER && u.type !== EntityType.MONK && u.type !== EntityType.GUARD;
+      const far = Math.hypot(target.x - u.x, target.y - u.y) > attack.range + this.bodyRadius(target) + 60;
+      if (soldier && far && this.tickCount - (u.lastCheer ?? -Infinity) > CHEER_COOLDOWN) {
+        u.cheer = CHEER_TIME;
+        u.lastCheer = this.tickCount;
+      }
+    }
+    if (u.cheer > 0) { u.cheer -= DT; u.action = 'cheering'; return; }
+    if (isBuilding(target)) {
+      if (!this.moveToBuilding(u, target, attack.range + 4)) return;
+    } else {
+      // Bodies are kept apart by their radii plus padding: melee reaches a little past that gap
+      const reach = attack.range + ENTITY_STATS[u.type].radius + this.bodyRadius(target) + COLLISION_PADDING * 2 + 4;
+      if (!this.moveToward(u, target.x, target.y, reach)) return;
+    }
 
     u.action = 'attacking';
     if (u.cooldown > 0) return;
     u.cooldown = attack.cooldown;
+    if (attack.line) { this.lineStrike(u, target, attack); return; }
     if (attack.range > 0 && !attack.area) {
+      const kind = attack.burn ? 'fireball' : attack.chill ? 'ice' : u.type;
       this.shots.push({
-        x: u.x, y: u.y, targetId: target.id, kind: attack.burn ? 'fireball' : u.type, attackerId: u.id,
+        x: u.x, y: u.y, targetId: target.id, kind, attackerId: u.id,
       });
     }
-    if (attack.burn) target.burn = { ...attack.burn, time: attack.burn.duration, owner: u.owner, acc: 0 };
     if (attack.area) { this.areaBlast(u, target, attack); return; }
-    this.damage(target, attack.damage, u.owner);
+    this.afflict(target, attack, u.owner);
+    this.damage(target, attack.damage * this.damageFactor(attack, target), u.owner);
+  }
+
+  // Bonus against some unit types (spears against the fast units); shields stop part of what is shot
+  damageFactor(attack, target) {
+    const shield = attack.range > 0 ? ENTITY_STATS[target.type]?.shield ?? 1 : 1;
+    return (attack.bonus?.[target.type] ?? 1) * shield;
+  }
+
+  // Lasting effects of a hit: fire keeps burning, ice slows units down
+  afflict(e, attack, owner) {
+    if (attack.burn) e.burn = { ...attack.burn, time: attack.burn.duration, owner, acc: 0 };
+    if (attack.chill && isUnit(e)) e.chill = { factor: attack.chill.factor, time: attack.chill.duration };
+  }
+
+  // Geomancy: rock spikes erupt in a line from the attacker through the target, hitting every
+  // enemy unit on it. Buildings get a boulder thrown at them instead, for extra damage
+  lineStrike(u, target, attack) {
+    if (isBuilding(target)) {
+      this.shots.push({ x: u.x, y: u.y, targetId: target.id, kind: 'rock', attackerId: u.id });
+      this.damage(target, attack.damage * (attack.vsBuildings ?? 1), u.owner);
+      return;
+    }
+    const dx = target.x - u.x;
+    const dy = target.y - u.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const ux = dx / dist;
+    const uy = dy / dist;
+    const length = dist + 30;
+    const half = attack.line.width / 2;
+    this.shots.push({
+      x: u.x, y: u.y, tx: u.x + ux * length, ty: u.y + uy * length, targetId: target.id, kind: 'earthLine', attackerId: u.id,
+    });
+    const hit = new Set([target]);
+    for (const e of this.entities.values()) {
+      if (!isUnit(e) || !e.owner || e.owner === u.owner) continue;
+      const along = (e.x - u.x) * ux + (e.y - u.y) * uy;
+      const across = Math.abs((e.x - u.x) * uy - (e.y - u.y) * ux);
+      if (along > 0 && along <= length && across <= half + ENTITY_STATS[e.type].radius) hit.add(e);
+    }
+    for (const e of hit) this.damage(e, e === target ? attack.damage : attack.damage * (attack.line.splash ?? 1), u.owner);
   }
 
   // Gust around the attacker: damages the target plus every enemy unit within `area`, stuns them and
@@ -803,6 +1178,7 @@ export class GameRoom {
   areaBlast(u, target, attack) {
     this.shots.push({
       x: u.x, y: u.y, targetId: target.id, kind: 'blast', radius: attack.area, attackerId: u.id, fire: !!attack.burn,
+      element: this.civOf(u) ?? 'air',
     });
     const hit = new Set([target]);
     for (const e of this.entities.values()) {
@@ -815,7 +1191,7 @@ export class GameRoom {
         e.knock = { vx: ((e.x - u.x) / d) * attack.knockback, vy: ((e.y - u.y) / d) * attack.knockback };
         if (attack.stun) e.stun = Math.max(e.stun ?? 0, attack.stun);
       }
-      if (attack.burn) e.burn = { ...attack.burn, time: attack.burn.duration, owner: u.owner, acc: 0 };
+      this.afflict(e, attack, u.owner);
       this.damage(e, attack.damage, u.owner);
     }
   }
@@ -829,6 +1205,12 @@ export class GameRoom {
       const whole = Math.floor(e.burn.acc);
       if (whole > 0) { e.burn.acc -= whole; this.damage(e, whole, e.burn.owner); }
       if (e.burn && e.burn.time <= 0) delete e.burn;
+    }
+    // Ice wears off
+    for (const e of this.entities.values()) {
+      if (!e.chill) continue;
+      e.chill.time -= DT;
+      if (e.chill.time <= 0) delete e.chill;
     }
   }
 
@@ -860,7 +1242,7 @@ export class GameRoom {
     if (!target || b.cooldown > 0) return;
     b.cooldown = attack.cooldown;
     this.shots.push({ x: b.x, y: b.y - buildingSize(b.type) / 2, targetId: target.id });
-    this.damage(target, attack.damage, b.owner);
+    this.damage(target, attack.damage * this.damageFactor(attack, target), b.owner);
   }
 
   damage(target, amount, attackerOwner) {
@@ -896,7 +1278,7 @@ export class GameRoom {
   updateCapturer(u) {
     const c = this.entities.get(u.task.buildingId);
     if (!c?.central || c.hp > 0) { u.task = null; return; }
-    if (!this.moveToward(u, c.x, c.y, buildingSize(c.type) / 2 + ENTITY_STATS[u.type].radius + 2)) return;
+    if (!this.moveToBuilding(u, c)) return;
     c.owner = u.owner;
     c.hp = c.maxHp;
     c.controlTime = 0;
@@ -965,25 +1347,28 @@ export class GameRoom {
       if (!s.owner || s.amount < s.max) continue; // wild, or already being butchered
       const home = this.closest(this.dropOffsOf(s.owner), s.x, s.y);
       if (!home) continue;
-      // Each sheep has its own spot around the drop-off so the flock spreads out
+      // Each sheep has its own spot around the drop-off, clear of its walls, so the flock spreads out
       const angle = s.id * 2.399963;
-      const d = buildingSize(home.type) / 2 + SHEEP.idleDistance;
+      const d = this.outside(home, angle, SHEEP.radius) + SHEEP.idleDistance;
       this.moveToward(s, home.x + Math.cos(angle) * d, home.y + Math.sin(angle) * d, 6);
+      this.pushOutOfBuildings(s);
+      this.pushOutOfTerrain(s);
       s.tx = clamp(Math.floor(s.x / TILE_SIZE), 0, this.mapTiles - 1);
       s.ty = clamp(Math.floor(s.y / TILE_SIZE), 0, this.mapTiles - 1);
     }
   }
 
   updateProduction(b) {
-    if (!b.built || !b.queue.length) return;
+    if (!b.built || !b.queue.length || b.ageUp) return;
     b.trainProgress += DT / ENTITY_STATS[b.queue[0]].trainTime;
     if (b.trainProgress < 1) return;
 
-    // Spawn on the side of the building facing the map centre
+    // Spawn out of the front door (the side facing the camera), fanned out so they don't pile up
     const unitType = b.queue.shift();
     b.trainProgress = 0;
-    const angle = Math.atan2(this.mapSize / 2 - b.y, this.mapSize / 2 - b.x) + (Math.random() - 0.5);
-    const distance = buildingSize(b.type) / 2 + ENTITY_STATS[unitType].radius + 6;
+    b.spawned = (b.spawned ?? 0) + 1;
+    const angle = FRONT + [0, -0.35, 0.35, -0.7, 0.7][b.spawned % 5];
+    const distance = this.outside(b, angle, ENTITY_STATS[unitType].radius);
     const player = this.players.get(b.owner);
     if (player) player.stats.trained++;
     this.addUnit(
@@ -1015,19 +1400,21 @@ export class GameRoom {
     const central = this.central?.owner === player.id ? this.central.controlTime : 0;
     player.score = Math.floor(stats.gathered * SCORE.perGathered + stats.kills * SCORE.perKill
       + stats.trained * SCORE.perTrained + buildings * SCORE.perBuilding
-      + player.gatherLevel * SCORE.perUpgrade + central * SCORE.perCentralSecond);
+      + player.gatherLevel * SCORE.perUpgrade + (player.age - 1) * SCORE.perAge + central * SCORE.perCentralSecond);
   }
 
   tick() {
     this.tickCount++;
+    for (const e of this.entities.values()) { e.prevX = e.x; e.prevY = e.y; }
+    for (const s of this.resources.values()) if (isSheep(s)) { s.prevX = s.x; s.prevY = s.y; }
     for (const e of [...this.entities.values()]) {
       if (!this.entities.has(e.id)) continue; // removed earlier this tick
-      if (isBuilding(e)) { this.updateProduction(e); this.updateResearch(e); this.updateTower(e); continue; }
+      if (isBuilding(e)) { this.updateProduction(e); this.updateResearch(e); this.updateAgeUp(e); this.updateTower(e); continue; }
       e.action = 'idle';
       e.cooldown = Math.max(0, e.cooldown - DT);
       // Stunned units (flyer impact) can't move or act until it wears off
       if (e.stun > 0) { e.stun -= DT; e.action = 'stunned'; continue; }
-      if (e.type === EntityType.GUARD) this.leashGuard(e);
+      if (e.post) this.leashGuard(e);
       const task = e.task?.type;
       if (task === 'heal') this.updateHealer(e);
       else if (task === 'gather') this.updateGatherer(e);
@@ -1036,6 +1423,8 @@ export class GameRoom {
       else if (task === 'capture') this.updateCapturer(e);
       else if (task === 'farm') this.updateFarmer(e);
       else if (this.moveToward(e, e.tx, e.ty)) {
+        e.formationSpeed = null;
+        if (this.nextOrder(e)) continue;
         if (ENTITY_STATS[e.type].heal) this.autoHeal(e);
         else this.autoAcquire(e);
       }
@@ -1114,12 +1503,12 @@ export class GameRoom {
   }
 
   serialize(e) {
-    const base = { id: e.id, type: e.type, owner: e.owner, x: e.x, y: e.y, hp: e.hp, burning: !!e.burn };
+    const base = { id: e.id, type: e.type, owner: e.owner, x: e.x, y: e.y, hp: e.hp, burning: !!e.burn, chilled: !!e.chill, civ: e.civ };
     if (isBuilding(e)) {
       return {
         ...base, tx: e.tx, ty: e.ty, built: e.built, buildProgress: e.buildProgress,
         queue: e.queue, trainProgress: e.trainProgress,
-        central: !!e.central, controlTime: e.controlTime ?? 0, food: e.food, maxHp: e.maxHp, research: e.research,
+        central: !!e.central, controlTime: e.controlTime ?? 0, food: e.food, maxHp: e.maxHp, research: e.research, ageUp: e.ageUp,
       };
     }
     const capacity = ENTITY_STATS[e.type].carryCapacity ?? 1;
@@ -1128,6 +1517,7 @@ export class GameRoom {
       task: e.task?.type ?? null,
       buildingId: e.task?.type === 'build' || e.task?.type === 'farm' ? e.task.buildingId : null,
       targetId: e.task?.type === 'attack' || e.task?.type === 'heal' ? e.task.targetId : null,
+      orders: e.orders?.length ? e.orders.map((o) => [Math.round(o.x), Math.round(o.y)]) : undefined,
       resourceId: e.task?.type === 'gather' ? e.task.resourceId : null,
       action: e.action,
       carry: e.carry,
