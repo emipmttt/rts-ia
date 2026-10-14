@@ -1496,9 +1496,10 @@ export class GameRoom {
     }
 
     for (const p of this.players.values()) this.updatePopulation(p);
-    // Volatile: a player whose connection is still busy with the previous state skips this one
-    // instead of queueing it, so a slow link shows the game a little choppier, never further behind
-    this.io.to(this.id).volatile.emit('game:state', {
+    // Not volatile: a volatile state is dropped whenever the socket is still busy, and the resources
+    // and shots sent just before it in the same tick kept it busy, so states never arrived. Clients
+    // skip stale states themselves (they only read the newest one each frame).
+    this.io.to(this.id).emit('game:state', {
       players: [...this.players.values()].map(({ flag, ...p }) => p), // flags are sent once, at the start
       sheep: this.sheepState(),
       entities: [...this.entities.values()].map((e) => this.serialize(e)),
