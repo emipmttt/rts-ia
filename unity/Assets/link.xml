@@ -2,4 +2,6 @@
 <linker>
   <assembly fullname="Assembly-CSharp" preserve="all" />
   <assembly fullname="Newtonsoft.Json" preserve="all" />
+  <!-- Colliders are only created at runtime (CreatePrimitive, picking meshes), so the stripper can't see them -->
+  <assembly fullname="UnityEngine.PhysicsModule" preserve="all" />
 </linker>
