@@ -315,13 +315,14 @@ namespace RTS.Game
             EntityView s = null;
             if (id != null) sprites.TryGetValue(id.Value, out s);
             if (s == null || s.s.owner != myId) { selected.Clear(); return; }
-            // Double click on a unit: select every unit of that type on screen
+            // Double click: select every unit, or every finished building, of that type on screen
             float now = Time.unscaledTime;
             bool isDouble = lastClick?.id == id && now - lastClick.Value.time < DoubleClick;
             lastClick = isDouble ? null : ((int, float)?)(id.Value, now);
-            if (isDouble && !s.isBuilding)
+            if (isDouble)
             {
-                selected = new HashSet<int>(VisibleUnitsOfType(s.s.type));
+                selected = new HashSet<int>(VisibleUnitsOfType(s.s.type).Where(i => !s.isBuilding || sprites[i].s.built));
+                selected.Add(id.Value);
                 return;
             }
             // Buildings are only selected: what they can do is in the command bar
@@ -382,7 +383,7 @@ namespace RTS.Game
                 return "gather";
             }
             // Enemies, the neutral central town center, or a fallen one (villagers capture it)
-            if (s != null && (s.s.owner != myId || (s.s.central && s.s.hp <= 0)))
+            if (s != null && (!Allied(s.s.owner) || (s.s.central && s.s.hp <= 0)))
             {
                 socket.Emit("game:attack", new { unitIds, targetId = target.id, queue = Shift });
                 return "attack";

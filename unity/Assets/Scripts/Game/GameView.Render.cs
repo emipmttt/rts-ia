@@ -713,8 +713,10 @@ namespace RTS.Game
                     else if (drawing == null) c = color;
                     else
                     {
+                        // Pure white is the player's colour; any other colour is kept; empty is white cloth
                         var d = drawing.GetPixel(x * drawing.width / W, y * drawing.height / H);
-                        c = Color.Lerp(Color.white, color, d.a);
+                        var ink = d.r > 0.99f && d.g > 0.99f && d.b > 0.99f ? color : new Color(d.r, d.g, d.b);
+                        c = Color.Lerp(Color.white, ink, d.a);
                     }
                     tex.SetPixel(x, y, c);
                 }

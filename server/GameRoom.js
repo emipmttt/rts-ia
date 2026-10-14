@@ -1,5 +1,5 @@
 import {
-  TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, STARTING_VILLAGERS, STARTING_STOCK,
+  TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, MAX_TEAMS, STARTING_VILLAGERS, STARTING_STOCK,
   MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, CIVILIZATIONS, EntityType, ENTITY_STATS, unitStats, RESOURCE_STATS, MAX_POPULATION,
   Terrain, ResourceType, mapTilesFor, SCORE, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP, AGES,
 } from '../shared/constants.js';
@@ -110,11 +110,38 @@ export class GameRoom {
       ...this.summary(),
       hostId: this.hostId,
       players: [...this.players.values()].map(({
-        id, name, faction, color, flag, civ,
+        id, name, faction, color, flag, civ, team,
       }) => ({
-        id, name, faction, color, flag, civ,
+        id, name, faction, color, flag, civ, team,
       })),
     };
+  }
+
+  // Team (0 = alone, 1..MAX_TEAMS) and colour, picked in the waiting room; a colour taken by someone
+  // else can't be picked
+  setTeam(playerId, team) {
+    const player = this.players.get(playerId);
+    if (!player || this.status !== RoomStatus.WAITING || !Number.isInteger(team) || team < 0 || team > MAX_TEAMS) return;
+    player.team = team;
+    this.broadcastRoom();
+  }
+
+  setColor(playerId, factionId) {
+    const player = this.players.get(playerId);
+    const faction = FACTIONS.find((f) => f.id === factionId);
+    if (!player || !faction || this.status !== RoomStatus.WAITING) return;
+    if ([...this.players.values()].some((p) => p.id !== playerId && p.faction === factionId)) return this.error(playerId, 'Ese color ya está ocupado');
+    player.faction = faction.id;
+    player.color = faction.color;
+    this.broadcastRoom();
+  }
+
+  // Same player, or teammates: they don't fight each other, share vision and win together
+  allied(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    const ta = this.players.get(a)?.team, tb = this.players.get(b)?.team;
+    return !!ta && ta === tb;
   }
 
   // Each player picks their own civilization while the room is waiting
@@ -133,7 +160,7 @@ export class GameRoom {
     const free = FACTIONS.filter((f) => !used.has(f.id));
     const faction = free[Math.floor(Math.random() * free.length)];
     this.players.set(playerId, {
-      id: playerId, name, faction: faction.id, color: faction.color, civ: CIVILIZATIONS[0].id, stock: { ...STARTING_STOCK }, defeated: false,
+      id: playerId, name, faction: faction.id, color: faction.color, civ: CIVILIZATIONS[0].id, team: 0, stock: { ...STARTING_STOCK }, defeated: false,
       connected: true, pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
       gatherLevel: 0, // lumber camp upgrades researched
       age: 1, // 1..AGES.length
@@ -162,7 +189,7 @@ export class GameRoom {
     this.mapTiles = mapTilesFor(this.players.size);
     this.mapSize = this.mapTiles * TILE_SIZE;
     this.walkBlocked = new Uint8Array(this.mapTiles * this.mapTiles);
-    const spawns = assignSpawns([...this.players.keys()], this.mapSize);
+    const spawns = assignSpawns([...this.players.keys()], this.mapSize, (id) => this.players.get(id).team);
     const mapCenter = { x: this.mapSize / 2, y: this.mapSize / 2 };
     this.world = generateWorld(Math.floor(Math.random() * 2 ** 31), this.mapTiles, [...spawns.values()], [mapCenter]);
     for (const r of this.world.resources) {
@@ -379,7 +406,9 @@ export class GameRoom {
     const sx = -fy, sy = fx; // across the rows
     const width = Math.max(1, Math.round(Math.sqrt(units.length * 1.8)));
     const ranked = [...units].sort((a, b) => (FORMATION_RANK[a.type] ?? 2) - (FORMATION_RANK[b.type] ?? 2));
-    const slowest = units.length > 1 ? Math.min(...units.map((u) => this.speedOf(u))) : null;
+    // From each unit's own top speed: not its current one, which may be slowed by ice or by the
+    // previous formation (that compounded with every new order until the army crawled)
+    const slowest = units.length > 1 ? Math.min(...units.map((u) => this.baseSpeed(u))) : null;
     for (let row = 0; row * width < ranked.length; row++) {
       // Within a row, units take the slots on the side they already stand on, so nobody crosses
       const members = ranked.slice(row * width, (row + 1) * width).sort((a, b) => (a.x * sx + a.y * sy) - (b.x * sx + b.y * sy));
@@ -625,7 +654,7 @@ export class GameRoom {
       if (target.central && target.hp <= 0) {
         delete u.resumeTask;
         if (u.type === EntityType.VILLAGER) u.task = { type: 'capture', buildingId: target.id };
-      } else if (target.owner !== playerId) {
+      } else if (!this.allied(target.owner, playerId)) {
         u.task = { type: 'attack', targetId: target.id };
       }
     }
@@ -771,9 +800,11 @@ export class GameRoom {
   }
 
   // Walking speed: the unit's civilization may change it, ice slows it
+  baseSpeed(u) { return unitStats(u.type, this.civOf(u)).speed; }
+
   speedOf(u) {
     if (isSheep(u)) return SHEEP.speed;
-    let { speed } = unitStats(u.type, this.civOf(u));
+    let speed = this.baseSpeed(u);
     // Marching in formation: no faster than the group's slowest (only on a plain move order)
     if (u.formationSpeed && !u.task) speed = Math.min(speed, u.formationSpeed);
     return speed * (u.chill ? u.chill.factor : 1);
@@ -1094,8 +1125,14 @@ export class GameRoom {
 
   updateAttacker(u) {
     const target = this.entities.get(u.task.targetId);
-    if (!target || target.owner === u.owner || (target.central && target.hp <= 0)) {
-      if (!this.nextOrder(u)) u.task = null;
+    if (!target || this.allied(target.owner, u.owner) || (target.central && target.hp <= 0)) {
+      if (this.nextOrder(u)) return;
+      // Soldiers stay where the fight left them (not back to where they were sent from) and carry on
+      // with the next enemy nearby, units first, then buildings
+      u.task = null;
+      u.tx = u.x;
+      u.ty = u.y;
+      if (!u.post) this.huntNext(u);
       return;
     }
     const { attack } = unitStats(u.type, this.civOf(u));
@@ -1165,7 +1202,7 @@ export class GameRoom {
     });
     const hit = new Set([target]);
     for (const e of this.entities.values()) {
-      if (!isUnit(e) || !e.owner || e.owner === u.owner) continue;
+      if (!isUnit(e) || !e.owner || this.allied(e.owner, u.owner)) continue;
       const along = (e.x - u.x) * ux + (e.y - u.y) * uy;
       const across = Math.abs((e.x - u.x) * uy - (e.y - u.y) * ux);
       if (along > 0 && along <= length && across <= half + ENTITY_STATS[e.type].radius) hit.add(e);
@@ -1182,7 +1219,7 @@ export class GameRoom {
     });
     const hit = new Set([target]);
     for (const e of this.entities.values()) {
-      if (!isUnit(e) || !e.owner || e.owner === u.owner) continue;
+      if (!isUnit(e) || !e.owner || this.allied(e.owner, u.owner)) continue;
       if (Math.hypot(e.x - u.x, e.y - u.y) <= attack.area + ENTITY_STATS[e.type].radius) hit.add(e);
     }
     for (const e of hit) {
@@ -1230,7 +1267,7 @@ export class GameRoom {
     const { attack } = ENTITY_STATS[b.type];
     if (!attack || !b.built || (!b.owner && !b.central) || b.hp <= 0) return;
     b.cooldown = Math.max(0, b.cooldown - DT);
-    const inRange = (e) => e && isUnit(e) && e.owner !== b.owner
+    const inRange = (e) => e && isUnit(e) && !this.allied(e.owner, b.owner)
       && Math.hypot(e.x - b.x, e.y - b.y) <= attack.range + ENTITY_STATS[e.type].radius;
 
     let target = this.entities.get(b.targetId);
@@ -1290,10 +1327,22 @@ export class GameRoom {
   autoAcquire(u) {
     const { aggroRange } = ENTITY_STATS[u.type];
     if (!aggroRange) return;
-    const enemies = [...this.entities.values()].filter((e) => isUnit(e) && e.owner !== u.owner
+    const enemies = [...this.entities.values()].filter((e) => isUnit(e) && !this.allied(e.owner, u.owner)
       && (!u.post || Math.hypot(e.x - u.post.x, e.y - u.post.y) <= GUARD_LEASH));
     const target = this.closest(enemies, u.x, u.y, aggroRange);
     if (target) u.task = { type: 'attack', targetId: target.id };
+  }
+
+  // After a kill: the closest enemy unit, or else enemy building (not the neutral central castle),
+  // within a little more than the soldier's aggro range
+  huntNext(u) {
+    const { aggroRange } = ENTITY_STATS[u.type];
+    if (!aggroRange) return;
+    const range = aggroRange * 1.5;
+    const enemies = [...this.entities.values()].filter((e) => e.owner && !this.allied(e.owner, u.owner) && e.hp > 0);
+    const target = this.closest(enemies.filter(isUnit), u.x, u.y, range)
+      ?? this.closest(enemies.filter(isBuilding), u.x, u.y, range + 80);
+    if (target) u.task = { type: 'attack', targetId: target.id, engaged: true };
   }
 
   // Guards give up a chase that leads too far from their post and walk back
@@ -1447,7 +1496,9 @@ export class GameRoom {
     }
 
     for (const p of this.players.values()) this.updatePopulation(p);
-    this.io.to(this.id).emit('game:state', {
+    // Volatile: a player whose connection is still busy with the previous state skips this one
+    // instead of queueing it, so a slow link shows the game a little choppier, never further behind
+    this.io.to(this.id).volatile.emit('game:state', {
       players: [...this.players.values()].map(({ flag, ...p }) => p), // flags are sent once, at the start
       sheep: this.sheepState(),
       entities: [...this.entities.values()].map((e) => this.serialize(e)),
@@ -1460,7 +1511,7 @@ export class GameRoom {
     if (this.status !== RoomStatus.PLAYING) return;
 
     if (this.central?.owner && this.central.controlTime >= CENTRAL_CONTROL_TIME) {
-      this.endGame(this.central.owner, 'dominó el Centro urbano central');
+      this.endGame(this.central.owner, 'dominó la Fortaleza central');
       return;
     }
 
@@ -1477,18 +1528,24 @@ export class GameRoom {
       this.notice(`${player.name} ha sido derrotado`);
     }
 
+    // Over when everyone still standing is on one side (a lone player, or one team)
     const alive = [...this.players.values()].filter((p) => !p.defeated);
-    if (this.startingPlayers > 1 && alive.length === 1) this.endGame(alive[0].id, 'destruyó todos los Centros urbanos enemigos');
-    else if (alive.length === 0) this.endGame(null, 'nadie sobrevivió');
+    const oneSide = alive.length > 0 && alive.every((p) => this.allied(p.id, alive[0].id));
+    if (this.startingPlayers > 1 && oneSide && [...this.players.values()].some((p) => !this.allied(p.id, alive[0].id))) {
+      this.endGame(alive[0].id, alive.length > 1 ? 'destruyeron todos los Centros urbanos enemigos' : 'destruyó todos los Centros urbanos enemigos');
+    } else if (alive.length === 0) this.endGame(null, 'nadie sobrevivió');
   }
 
   endGame(winnerId, reason) {
     this.status = RoomStatus.FINISHED;
     clearInterval(this.interval);
     const winner = this.players.get(winnerId);
+    // The whole team wins (defeated teammates too)
+    const winners = winner ? [...this.players.values()].filter((p) => this.allied(p.id, winnerId)) : [];
     this.io.to(this.id).emit('game:over', {
       winnerId,
-      winnerName: winner?.name ?? null,
+      winnerIds: winners.map((p) => p.id),
+      winnerName: winners.length > 1 ? winners.map((p) => p.name).join(' y ') : winner?.name ?? null,
       winnerFaction: winner?.faction ?? null,
       reason,
       duration: (Date.now() - this.startedAt) / 1000,
@@ -1502,28 +1559,41 @@ export class GameRoom {
     this.onStatusChange();
   }
 
+  // Sent 20 times a second for every entity, so it's kept lean: positions and numbers rounded, and
+  // fields left out while they hold their default (the client fills those in)
   serialize(e) {
-    const base = { id: e.id, type: e.type, owner: e.owner, x: e.x, y: e.y, hp: e.hp, burning: !!e.burn, chilled: !!e.chill, civ: e.civ };
+    const r1 = (v) => Math.round(v * 10) / 10, r2 = (v) => Math.round(v * 100) / 100;
+    const o = { id: e.id, type: e.type, x: r1(e.x), y: r1(e.y), hp: r1(e.hp) };
+    if (e.owner != null) o.owner = e.owner;
+    if (e.burn) o.burning = true;
+    if (e.chill) o.chilled = true;
+    if (e.civ) o.civ = e.civ;
     if (isBuilding(e)) {
-      return {
-        ...base, tx: e.tx, ty: e.ty, built: e.built, buildProgress: e.buildProgress,
-        queue: e.queue, trainProgress: e.trainProgress,
-        central: !!e.central, controlTime: e.controlTime ?? 0, food: e.food, maxHp: e.maxHp, research: e.research, ageUp: e.ageUp,
-      };
+      o.tx = e.tx; o.ty = e.ty;
+      if (!e.built) { o.built = false; o.buildProgress = r2(e.buildProgress); }
+      if (e.queue?.length) { o.queue = e.queue; o.trainProgress = r2(e.trainProgress); }
+      if (e.central) { o.central = true; o.controlTime = r1(e.controlTime ?? 0); }
+      if (e.food != null) o.food = r1(e.food);
+      if (e.maxHp != null && e.maxHp !== ENTITY_STATS[e.type].hp) o.maxHp = e.maxHp;
+      if (e.research) o.research = { ...e.research, progress: r2(e.research.progress ?? 0) };
+      if (e.ageUp) o.ageUp = { ...e.ageUp, progress: r2(e.ageUp.progress ?? 0) };
+      return o;
     }
-    const capacity = ENTITY_STATS[e.type].carryCapacity ?? 1;
-    return {
-      ...base,
-      task: e.task?.type ?? null,
-      buildingId: e.task?.type === 'build' || e.task?.type === 'farm' ? e.task.buildingId : null,
-      targetId: e.task?.type === 'attack' || e.task?.type === 'heal' ? e.task.targetId : null,
-      orders: e.orders?.length ? e.orders.map((o) => [Math.round(o.x), Math.round(o.y)]) : undefined,
-      resourceId: e.task?.type === 'gather' ? e.task.resourceId : null,
-      action: e.action,
-      carry: e.carry,
+    const t = e.task;
+    if (t) o.task = t.type;
+    if (t?.type === 'build' || t?.type === 'farm') o.buildingId = t.buildingId;
+    if (t?.type === 'attack' || t?.type === 'heal') o.targetId = t.targetId;
+    if (t?.type === 'gather') o.resourceId = t.resourceId;
+    if (e.orders?.length) o.orders = e.orders.map((q) => [Math.round(q.x), Math.round(q.y)]);
+    if (e.action) o.action = e.action;
+    if (e.carry?.amount > 0 || e.carry?.type) o.carry = e.carry;
+    if (e.type === EntityType.VILLAGER) {
+      const capacity = ENTITY_STATS[e.type].carryCapacity ?? 1;
       // 0..1 fill of the villager's carry load, including the partial unit being gathered
-      gatherFill: Math.min(1, (e.carry.amount + e.gatherProgress) / capacity),
-    };
+      const fill = r2(Math.min(1, (e.carry.amount + e.gatherProgress) / capacity));
+      if (fill > 0) o.gatherFill = fill;
+    }
+    return o;
   }
 
   destroy() { clearInterval(this.interval); }

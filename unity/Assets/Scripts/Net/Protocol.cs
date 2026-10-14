@@ -12,6 +12,7 @@ namespace RTS.Net
         public Dictionary<string, int> stock = new Dictionary<string, int>();
         public bool defeated, connected = true;
         public int pop, popCap, gatherLevel, score;
+        public int team;                 // 0 = alone, 1..4
         public int age = 1;
         public int trained, lost, kills, gathered;
 
@@ -23,7 +24,7 @@ namespace RTS.Net
                 flag = (string)t["flag"], color = (int?)t["color"] ?? 0x9e9e9e,
                 defeated = (bool?)t["defeated"] ?? false, connected = (bool?)t["connected"] ?? true,
                 pop = (int?)t["pop"] ?? 0, popCap = (int?)t["popCap"] ?? 0, gatherLevel = (int?)t["gatherLevel"] ?? 0, age = (int?)t["age"] ?? 1,
-                score = (int?)t["score"] ?? 0,
+                score = (int?)t["score"] ?? 0, team = (int?)t["team"] ?? 0,
             };
             if (t["stock"] is JObject stock) foreach (var kv in stock) p.stock[kv.Key] = (int)(double)kv.Value;
             if (t["stats"] is JObject s)

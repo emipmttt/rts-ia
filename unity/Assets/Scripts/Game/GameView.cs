@@ -329,7 +329,7 @@ namespace RTS.Game
                     if (stateSeen && e.owner == myId && !s.isBuilding) SfxAt("trained", e.x, e.y);
                 }
                 // Enemy buildings out of sight keep the look they had when last seen
-                else if (s.isBuilding && !s.inSight && e.owner != myId && !e.central) continue;
+                else if (s.isBuilding && !s.inSight && !Allied(e.owner) && !e.central) continue;
                 else if (e.hp < s.s.hp && s.inSight)
                 {
                     SfxAt(s.isBuilding ? "hit" : e.type == "spearman" ? "block" : "sword", e.x, e.y);
@@ -537,6 +537,14 @@ namespace RTS.Game
             v.fieldsMaterial.SetFloat("_Cutoff", 0.3f);
             mr.sharedMaterial = v.fieldsMaterial;
             mr.shadowCastingMode = ShadowCastingMode.Off;
+        }
+
+        // Ours or a teammate's: shares vision and is never attacked
+        public bool Allied(string owner)
+        {
+            if (owner == myId) return true;
+            if (owner == null || !players.TryGetValue(owner, out var p) || !players.TryGetValue(myId ?? "", out var me)) return false;
+            return me.team != 0 && p.team == me.team;
         }
 
         public string FactionOf(string owner) => owner != null && players.TryGetValue(owner, out var p) ? p.faction : NeutralFaction;

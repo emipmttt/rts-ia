@@ -271,7 +271,8 @@ namespace RTS.Game
         List<BarAction> BarActions(out string title, out EntityView building)
         {
             var mine = selected.Where(id => sprites.TryGetValue(id, out var v) && v.s.owner == myId).Select(id => sprites[id]).ToList();
-            building = mine.Count == 1 && mine[0].isBuilding ? mine[0] : null;
+            // One building, or several of the same type (double click): the bar acts on them together
+            building = mine.Count > 0 && mine.All(v => v.isBuilding && v.s.type == mine[0].s.type) ? mine[0] : null;
             var list = new List<BarAction>();
             var civ = CivOf(myId);
             if (building != null)
@@ -592,9 +593,12 @@ namespace RTS.Game
         {
             var unit = Defs.UnitStats(type, CivOf(myId));
             if (!Defs.CanAfford(stock, unit.cost)) { ShowMessage("Recursos insuficientes"); return; }
-            if (b.s.queueLength >= C.MaxTrainQueue) { ShowMessage("La cola está llena"); return; }
             if (popUsed >= popCap) { ShowMessage(popCap >= C.MaxPopulation ? "Límite de población alcanzado" : "Necesitas más casas"); return; }
-            socket.Emit("game:train", new { buildingId = b.s.id, type });
+            // With several buildings selected, each click goes to the one with the shortest queue
+            var target = selected.Where(id => sprites.TryGetValue(id, out var v) && v.s.owner == myId && v.s.type == b.s.type && v.s.built)
+                .Select(id => sprites[id]).OrderBy(v => v.s.queueLength).FirstOrDefault() ?? b;
+            if (target.s.queueLength >= C.MaxTrainQueue) { ShowMessage("La cola está llena"); return; }
+            socket.Emit("game:train", new { buildingId = target.s.id, type });
         }
 
         void Research(EntityView b)

@@ -29,13 +29,13 @@ namespace RTS.Game
                 fog.Begin();
                 foreach (var s in sprites.Values)
                 {
-                    if (s.s.owner != myId || s.gone) continue;
+                    if (!Allied(s.s.owner) || s.gone) continue; // teammates share their vision
                     float sight = Defs.Sight(s.s.type);
                     if (s.isBuilding && !s.s.built) sight *= UnfinishedSight;
                     fog.Reveal(s.gx, s.gy, sight);
                 }
                 foreach (var r in resources.Values)
-                    if (r.IsSheep && r.owner == myId) fog.Reveal(r.gx, r.gy, Defs.SheepSight);
+                    if (r.IsSheep && r.owner != null && Allied(r.owner)) fog.Reveal(r.gx, r.gy, Defs.SheepSight);
                 fog.End();
                 RefreshSight();
             }
@@ -48,7 +48,7 @@ namespace RTS.Game
             foreach (var kv in sprites)
             {
                 var s = kv.Value;
-                s.inSight = s.s.owner == myId && !s.gone
+                s.inSight = Allied(s.s.owner) && !s.gone
                     || (s.isBuilding ? fog.VisibleArea(s.s.x, s.s.y, Defs.BuildingSize(s.s.type) / 2) : fog.Visible(s.gx, s.gy));
                 // The central town center is everyone's objective: always on the map, like a wonder
                 if (s.isBuilding && (s.inSight || s.s.central)) s.seen = true;
@@ -66,7 +66,7 @@ namespace RTS.Game
             // Trees, mines and bushes once explored; sheep only while in sight (or ours)
             foreach (var r in resources.Values)
             {
-                bool show = r.IsSheep ? r.owner == myId || fog.Visible(r.gx, r.gy) : fog.Explored(r.gx, r.gy);
+                bool show = r.IsSheep ? (r.owner != null && Allied(r.owner)) || fog.Visible(r.gx, r.gy) : fog.Explored(r.gx, r.gy);
                 if (show == r.active) continue;
                 r.active = show;
                 r.root.SetActive(show);

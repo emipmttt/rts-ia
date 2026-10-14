@@ -697,9 +697,12 @@ namespace RTS.Game
         }
 
         // Slowed by ice: a frosty tint and snowflakes drifting down around the unit
+        const float FrostAlpha = 0.96f;
+
         void DrawChill(EntityView s)
         {
-            if (Time.time - s.hitAt >= HitFlash) s.sprite.color = GameAssets.Hex(0xb5e3ff);
+            // Alpha in the shader's frost band turns the sprite icy white (see SpriteLit.shader)
+            if (Time.time - s.hitAt >= HitFlash) s.sprite.color = new Color(1, 1, 1, FrostAlpha);
             if (Random.value < 0.25f)
                 AddBit(Feet(s) + Vector3.up * (0.4f + Random.value * 0.9f + s.alt * P) + camRight * (Random.value - 0.5f) * 0.6f,
                     (Vector3.up * -15 + camRight * (Random.value - 0.5f) * 10) * P, 0.7f, null, IceColors[Random.Range(0, IceColors.Length)]);

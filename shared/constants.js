@@ -59,11 +59,11 @@ export const CIV_STATS = {
     horseman: {
       name: 'Surfista de hielo', speed: 133,
       attack: {
-        damage: 7.5, range: 0, cooldown: 1.8, area: 60, knockback: 260, chill: { factor: 0.6, duration: 2.5 },
+        damage: 7.5, range: 0, cooldown: 1.8, area: 60, knockback: 260, chill: { factor: 0.82, duration: 1.5 },
       },
     },
     // Hydromancer: ice shards that slow the target
-    archer: { name: 'Hidromante', attack: { damage: 4.8, range: 160, cooldown: 1.3, chill: { factor: 0.75, duration: 1.5 } } },
+    archer: { name: 'Hidromante', attack: { damage: 4.8, range: 160, cooldown: 1.3, chill: { factor: 0.88, duration: 1.2 } } },
     // Water whip: quick, light lashes
     swordsman: { name: 'Guerrero de agua', speed: 74, attack: { damage: 8, range: 0, cooldown: 0.85 } },
   },
@@ -73,6 +73,7 @@ export const unitStats = (type, civ) => {
   return over ? { ...ENTITY_STATS[type], ...over } : ENTITY_STATS[type];
 };
 export const MAX_PLAYERS_PER_ROOM = FACTIONS.length;
+export const MAX_TEAMS = 4; // team 0 = on your own
 
 // World: square grid of tiles
 export const TILE_SIZE = 40;
@@ -161,7 +162,7 @@ export const ENTITY_STATS = {
   // Farm: a windmill surrounded by crop fields. Villagers assigned to it harvest food until the
   // crops run out; reseeding costs wood.
   [EntityType.FARM]: {
-    kind: 'building', name: 'Granja', tiles: 4, hp: 300, cost: { wood: 60 }, buildTime: 20, age: 2,
+    kind: 'building', name: 'Granja', tiles: 4, hp: 300, cost: { wood: 60 }, buildTime: 20,
     farm: { food: 250, reseedCost: { wood: 40 } },
   },
   // Lumber camp: drop-off for every resource, and researches better gathering (see GATHER_UPGRADES)

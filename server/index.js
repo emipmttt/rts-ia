@@ -37,7 +37,12 @@ if (existsSync(unityWeb)) {
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*' } });
+// Game states are big JSON every tick: compressed for clients that support it (browsers do), which
+// cuts what each player downloads in a battle to a fraction
+const io = new Server(httpServer, {
+  cors: { origin: '*' },
+  perMessageDeflate: { threshold: 1024, zlibDeflateOptions: { level: 1 } },
+});
 const lobby = new Lobby(io);
 
 // Each browser tab keeps a secret token across reconnects; the public player id is derived from it,
@@ -62,6 +67,8 @@ io.on('connection', (socket) => {
   socket.on('room:leave', () => lobby.leave(socket));
   socket.on('room:start', () => lobby.start(socket));
   socket.on('room:civ', (civ) => lobby.civ(socket, civ));
+  socket.on('room:team', (team) => lobby.roomOf(socket)?.setTeam(socket.data.playerId, team));
+  socket.on('room:color', (faction) => lobby.roomOf(socket)?.setColor(socket.data.playerId, faction));
   socket.on('room:settings', (settings) => lobby.settings(socket, settings ?? {}));
   socket.on('chat', (text) => lobby.roomOf(socket)?.handleChat(socket.data.playerId, text));
 

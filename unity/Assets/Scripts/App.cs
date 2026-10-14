@@ -42,10 +42,27 @@ namespace RTS
         Vector2 roomScroll;
         bool autoStarted;
 
-        // Flag editor: the player draws a black shape; the game receives it as white on transparent
-        const int FlagW = 96, FlagH = 64, FlagBrush = 6, FlagZoom = 3;
+        // Flag editor: freehand, lines and filled shapes in a small palette. Black is "my colour": it is
+        // exported as pure white, which the game paints in the player's colour; every other colour is
+        // kept as drawn. Transparent shows the white cloth.
+        const int FlagW = 96, FlagH = 64, FlagZoom = 3;
         Texture2D flagCanvas;
-        Vector2? lastFlagPoint;
+        Vector2? lastFlagPoint, shapeStart;
+        Color32[] beforeStroke, undoPixels;
+        enum FlagTool { Brush, Line, Rect, Circle, Triangle, Fill, Eraser }
+        static readonly (FlagTool tool, string label)[] FlagTools =
+        {
+            (FlagTool.Brush, "Pincel"), (FlagTool.Line, "Línea"), (FlagTool.Rect, "Rect."), (FlagTool.Circle, "Círculo"),
+            (FlagTool.Triangle, "Triáng."), (FlagTool.Fill, "Relleno"), (FlagTool.Eraser, "Goma"),
+        };
+        static readonly Color32 TeamInk = new Color32(0, 0, 0, 255);
+        static readonly Color32[] FlagPalette =
+        {
+            TeamInk, new Color32(0xf5, 0xf5, 0xf0, 255), new Color32(0x26, 0x22, 0x22, 255), new Color32(0xd6, 0x3c, 0x34, 255), new Color32(0xf0, 0x8a, 0x24, 255),
+            new Color32(0xf2, 0xcf, 0x3a, 255), new Color32(0x4f, 0xa8, 0x4a, 255), new Color32(0x3a, 0x74, 0xd0, 255), new Color32(0x8a, 0x55, 0xc4, 255), new Color32(0x7a, 0x4e, 0x2c, 255),
+        };
+        FlagTool flagTool = FlagTool.Brush;
+        int flagColor, flagBrush = 6;
 
         // End screen
         class EndScreen
@@ -246,8 +263,10 @@ namespace RTS
                 var winnerId = (string)d["winnerId"];
                 var winnerName = (string)d["winnerName"];
                 var reason = (string)d["reason"];
-                bool won = winnerId != null && winnerId == myId;
-                var text = winnerName != null ? $"¡{(won ? "Tu reino" : winnerName)} {reason}!" : $"Sin ganador: {reason}.";
+                var winnerIds = (d["winnerIds"] as JArray)?.Select(w => (string)w).ToList();
+                bool won = winnerId != null && (winnerId == myId || winnerIds != null && winnerIds.Contains(myId));
+                bool teamWon = winnerIds != null && winnerIds.Count > 1;
+                var text = winnerName != null ? $"¡{(won ? (teamWon ? "Tu equipo" : "Tu reino") : winnerName)} {(won && teamWon ? reason.Replace("destruyeron", "destruyó") : reason)}!" : $"Sin ganador: {reason}.";
                 float duration = (float?)d["duration"] ?? 0;
                 ShowEnd(new EndScreen
                 {
@@ -344,19 +363,15 @@ namespace RTS
 
             // Flag editor
             GUI.Label(new Rect(x, y, cw, 24), "Dibuja tu bandera", Skin.LabelDark);
-            GUI.Label(new Rect(x + 170, y + 2, cw - 170, 24), "(se pinta con tu color al jugar)", Skin.SmallDark);
+            GUI.Label(new Rect(x + 170, y + 2, cw - 170, 24), "(el negro se pinta con tu color al jugar)", Skin.SmallDark);
             y += 26;
             var flagRect = new Rect(x, y, FlagW * FlagZoom * 0.75f, FlagH * FlagZoom * 0.75f);
             Skin.Rect(new Rect(flagRect.x - 3, flagRect.y - 3, flagRect.width + 6, flagRect.height + 6), new Color(0.24f, 0.16f, 0.08f));
             Skin.Rect(flagRect, Color.white);
             GUI.DrawTexture(flagRect, flagCanvas);
             if (!serverMenuOpen) HandleFlagInput(flagRect);
-            if (GUI.Button(new Rect(flagRect.xMax + 16, flagRect.y + flagRect.height - 40, 110, 40), "Borrar", Skin.RedButton))
-            {
-                ClearFlag();
-                PlayerPrefs.DeleteKey("flagDrawing");
-            }
-            y += flagRect.height + 14;
+            float toolsH = DrawFlagTools(new Rect(flagRect.xMax + 14, flagRect.y - 4, cw - flagRect.width - 14, 180));
+            y += Mathf.Max(flagRect.height, toolsH) + 14;
 
             roomName = GUI.TextField(new Rect(x, y + 3, cw - 160, 32), roomName, 30, Skin.Field);
             if (string.IsNullOrEmpty(roomName)) GUI.Label(new Rect(x + 10, y + 7, 200, 24), "Nombre de la sala", Skin.SmallDark);
@@ -421,7 +436,7 @@ namespace RTS
         void DrawRoom(float W, float H)
         {
             if (currentRoom == null) return;
-            float w = 720, h = 460;
+            float w = 720, h = 540;
             var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
             GUI.Box(panel, GUIContent.none, Skin.Paper);
             GUI.Label(new Rect(panel.x + 60, panel.y - 18, w - 120, 64), currentRoom.name, Skin.Ribbon("blue"));
@@ -443,11 +458,12 @@ namespace RTS
                         if (GUI.Toggle(new Rect(x + 220 + i * 82, y, 78, 34), on, name, Skin.Button) && !on) socket.Emit("room:civ", id);
                     }
                 }
-                else GUI.Label(new Rect(x + 220, y + 4, 140, 30), C.Civilizations.FirstOrDefault(c => c.id == p.civ).name ?? "", Skin.SmallDark);
+                else GUI.Label(new Rect(x + 220, y + 4, 200, 30), (C.Civilizations.FirstOrDefault(c => c.id == p.civ).name ?? "") + "  ·  " + TeamName(p.team), Skin.SmallDark);
                 if (p.id == currentRoom.hostId) GUI.Label(new Rect(x + cw - 90, y + 4, 90, 30), "anfitrión", Skin.SmallDark);
                 y += 40;
+                if (p.id == myId) { DrawTeamAndColor(x + 24, y, p); y += 44; }
             }
-            y = Mathf.Max(y + 10, panel.y + 290);
+            y = Mathf.Max(y + 10, panel.y + 340);
             GUI.enabled = isHost;
             bool central = GUI.Toggle(new Rect(x, y, cw, 30), currentRoom.central, " Castillo central", Skin.Toggle);
             if (central != currentRoom.central) socket.Emit("room:settings", new { central });
@@ -459,6 +475,33 @@ namespace RTS
             var errStyle = new GUIStyle(Skin.LabelDark);
             errStyle.normal.textColor = new Color(0.75f, 0.15f, 0.1f);
             GUI.Label(new Rect(x, panel.yMax - 44, cw, 30), roomError, errStyle);
+        }
+
+        static string TeamName(int team) => team == 0 ? "sin equipo" : $"equipo {team}";
+
+        // My team (AoE-style: "—" alone, or 1..4) and my colour; colours others already use are shown
+        // crossed out and can't be picked
+        void DrawTeamAndColor(float x, float y, PlayerInfo me)
+        {
+            GUI.Label(new Rect(x, y + 6, 70, 26), "Equipo", Skin.SmallDark);
+            for (int t = 0; t <= 4; t++)
+            {
+                bool on = me.team == t;
+                if (GUI.Toggle(new Rect(x + 62 + t * 44, y, 40, 34), on, t == 0 ? "—" : t.ToString(), Skin.Button) && !on) socket.Emit("room:team", t);
+            }
+            float cx = x + 62 + 5 * 44 + 24;
+            GUI.Label(new Rect(cx, y + 6, 60, 26), "Color", Skin.SmallDark);
+            for (int i = 0; i < C.Factions.Length; i++)
+            {
+                var (id, color) = C.Factions[i];
+                var r = new Rect(cx + 50 + i * 40, y + 2, 32, 30);
+                bool mine = me.faction == id;
+                bool taken = !mine && currentRoom.playerList.Any(o => o.faction == id);
+                Skin.Rect(new Rect(r.x - 3, r.y - 3, r.width + 6, r.height + 6), mine ? new Color(0.24f, 0.16f, 0.08f) : new Color(0, 0, 0, 0));
+                Skin.Rect(r, GameAssets.Hex(color, taken ? 0.3f : 1));
+                if (taken) GUI.Label(r, "×", new GUIStyle(Skin.LabelDark) { alignment = TextAnchor.MiddleCenter });
+                else if (!mine && GUI.Button(r, GUIContent.none, GUIStyle.none)) socket.Emit("room:color", id);
+            }
         }
 
         void DrawEnd(float W, float H)
@@ -528,25 +571,80 @@ namespace RTS
             flagCanvas.Apply();
         }
 
+        // Tools, palette, brush size, undo and clear beside the canvas; returns the height used
+        float DrawFlagTools(Rect r)
+        {
+            var small = new GUIStyle(Skin.Button) { fontSize = 12 };
+            float bw = Mathf.Floor((r.width - 9) / 4), y = r.y;
+            for (int i = 0; i < FlagTools.Length; i++)
+            {
+                var (tool, label) = FlagTools[i];
+                var br = new Rect(r.x + (i % 4) * (bw + 3), y + (i / 4) * 32, bw, 30);
+                if (GUI.Toggle(br, flagTool == tool, label, small) && flagTool != tool) flagTool = tool;
+            }
+            // Brush size, in the free slot of the second row
+            var sizeRect = new Rect(r.x + 3 * (bw + 3), y + 32, bw, 30);
+            if (GUI.Button(sizeRect, flagBrush <= 3 ? "Fino" : flagBrush <= 6 ? "Medio" : "Grueso", small)) flagBrush = flagBrush <= 3 ? 6 : flagBrush <= 6 ? 10 : 3;
+            y += 70;
+            float sw = Mathf.Floor((r.width - 4 * 4) / 5);
+            for (int i = 0; i < FlagPalette.Length; i++)
+            {
+                var sr = new Rect(r.x + (i % 5) * (sw + 4), y + (i / 5) * 30, sw, 26);
+                Skin.Rect(new Rect(sr.x - 2, sr.y - 2, sr.width + 4, sr.height + 4), i == flagColor ? new Color(0.24f, 0.16f, 0.08f) : new Color(0.24f, 0.16f, 0.08f, 0.25f));
+                Skin.Rect(sr, FlagPalette[i]);
+                if (i == 0) GUI.Label(sr, "tu color", new GUIStyle(Skin.Small) { alignment = TextAnchor.MiddleCenter, fontSize = 10 });
+                if (GUI.Button(sr, GUIContent.none, GUIStyle.none)) { flagColor = i; if (flagTool == FlagTool.Eraser) flagTool = FlagTool.Brush; }
+            }
+            y += 64;
+            GUI.enabled = undoPixels != null;
+            if (GUI.Button(new Rect(r.x, y, r.width / 2 - 3, 32), "Deshacer", small)) { flagCanvas.SetPixels32(undoPixels); flagCanvas.Apply(); undoPixels = null; SaveFlag(); }
+            GUI.enabled = true;
+            if (GUI.Button(new Rect(r.x + r.width / 2 + 3, y, r.width / 2 - 3, 32), "Borrar todo", new GUIStyle(Skin.RedButton) { fontSize = 12 }))
+            {
+                undoPixels = flagCanvas.GetPixels32();
+                ClearFlag();
+                PlayerPrefs.DeleteKey("flagDrawing");
+            }
+            return y + 34 - r.y;
+        }
+
+        void SaveFlag() => PlayerPrefs.SetString("flagDrawing", Convert.ToBase64String(flagCanvas.EncodeToPNG()));
+
+        Color32 InkColor => flagTool == FlagTool.Eraser ? new Color32(0, 0, 0, 0) : FlagPalette[flagColor];
+
         void HandleFlagInput(Rect r)
         {
             var e = Event.current;
             if (e.button != 0) return;
             Vector2 ToCanvas(Vector2 m) => new Vector2((m.x - r.x) / r.width * FlagW, (1 - (m.y - r.y) / r.height) * FlagH);
+            bool freehand = flagTool == FlagTool.Brush || flagTool == FlagTool.Eraser;
             if (e.type == EventType.MouseDown && r.Contains(e.mousePosition))
             {
                 var p = ToCanvas(e.mousePosition);
-                Stamp(p);
+                beforeStroke = flagCanvas.GetPixels32();
+                undoPixels = beforeStroke;
+                if (flagTool == FlagTool.Fill) { FloodFill(Mathf.FloorToInt(p.x), Mathf.FloorToInt(p.y), InkColor); flagCanvas.Apply(); SaveFlag(); e.Use(); return; }
+                if (freehand) Stamp(p);
                 lastFlagPoint = p;
+                shapeStart = p;
                 flagCanvas.Apply();
                 e.Use();
             }
             else if (e.type == EventType.MouseDrag && lastFlagPoint != null)
             {
                 var p = ToCanvas(e.mousePosition);
-                var a = lastFlagPoint.Value;
-                int steps = Mathf.CeilToInt(Vector2.Distance(a, p));
-                for (int i = 0; i <= steps; i++) Stamp(Vector2.Lerp(a, p, i / (float)Mathf.Max(1, steps)));
+                if (freehand)
+                {
+                    var a = lastFlagPoint.Value;
+                    int steps = Mathf.CeilToInt(Vector2.Distance(a, p));
+                    for (int i = 0; i <= steps; i++) Stamp(Vector2.Lerp(a, p, i / (float)Mathf.Max(1, steps)));
+                }
+                else
+                {
+                    // Shapes are previewed live: redrawn over the canvas as it was when the drag began
+                    flagCanvas.SetPixels32(beforeStroke);
+                    DrawShape(shapeStart.Value, p);
+                }
                 lastFlagPoint = p;
                 flagCanvas.Apply();
                 e.Use();
@@ -554,27 +652,100 @@ namespace RTS
             else if (e.type == EventType.MouseUp && lastFlagPoint != null)
             {
                 lastFlagPoint = null;
-                PlayerPrefs.SetString("flagDrawing", Convert.ToBase64String(flagCanvas.EncodeToPNG()));
+                shapeStart = null;
+                SaveFlag();
                 e.Use();
             }
         }
 
-        void Stamp(Vector2 c)
+        void Plot(int x, int y, Color32 c)
         {
-            float rad = FlagBrush / 2f;
-            for (int y = Mathf.FloorToInt(c.y - rad); y <= Mathf.CeilToInt(c.y + rad); y++)
-                for (int x = Mathf.FloorToInt(c.x - rad); x <= Mathf.CeilToInt(c.x + rad); x++)
-                    if (x >= 0 && y >= 0 && x < FlagW && y < FlagH && (x + 0.5f - c.x) * (x + 0.5f - c.x) + (y + 0.5f - c.y) * (y + 0.5f - c.y) <= rad * rad)
-                        flagCanvas.SetPixel(x, y, Color.black);
+            if (x >= 0 && y >= 0 && x < FlagW && y < FlagH) flagCanvas.SetPixel(x, y, c);
         }
 
-        // The drawing as white on transparent (PNG data URL, as the web client sends it), or null
+        void Stamp(Vector2 c)
+        {
+            float rad = flagBrush / 2f;
+            var ink = InkColor;
+            for (int y = Mathf.FloorToInt(c.y - rad); y <= Mathf.CeilToInt(c.y + rad); y++)
+                for (int x = Mathf.FloorToInt(c.x - rad); x <= Mathf.CeilToInt(c.x + rad); x++)
+                    if ((x + 0.5f - c.x) * (x + 0.5f - c.x) + (y + 0.5f - c.y) * (y + 0.5f - c.y) <= rad * rad) Plot(x, y, ink);
+        }
+
+        // Filled shapes spanning the drag (a line is stroked with the brush)
+        void DrawShape(Vector2 a, Vector2 b)
+        {
+            var ink = InkColor;
+            float x0 = Mathf.Min(a.x, b.x), x1 = Mathf.Max(a.x, b.x), y0 = Mathf.Min(a.y, b.y), y1 = Mathf.Max(a.y, b.y);
+            switch (flagTool)
+            {
+                case FlagTool.Line:
+                    int steps = Mathf.CeilToInt(Vector2.Distance(a, b));
+                    for (int i = 0; i <= steps; i++) Stamp(Vector2.Lerp(a, b, i / (float)Mathf.Max(1, steps)));
+                    break;
+                case FlagTool.Rect:
+                    for (int y = Mathf.RoundToInt(y0); y <= Mathf.RoundToInt(y1); y++)
+                        for (int x = Mathf.RoundToInt(x0); x <= Mathf.RoundToInt(x1); x++) Plot(x, y, ink);
+                    break;
+                case FlagTool.Circle:
+                {
+                    var c = new Vector2((x0 + x1) / 2, (y0 + y1) / 2);
+                    float rx = Mathf.Max(0.5f, (x1 - x0) / 2), ry = Mathf.Max(0.5f, (y1 - y0) / 2);
+                    for (int y = Mathf.FloorToInt(y0); y <= Mathf.CeilToInt(y1); y++)
+                        for (int x = Mathf.FloorToInt(x0); x <= Mathf.CeilToInt(x1); x++)
+                        {
+                            float dx = (x + 0.5f - c.x) / rx, dy = (y + 0.5f - c.y) / ry;
+                            if (dx * dx + dy * dy <= 1) Plot(x, y, ink);
+                        }
+                    break;
+                }
+                case FlagTool.Triangle:
+                {
+                    // Point at the top of the dragged box (canvas y grows upward), base along the bottom
+                    float h = Mathf.Max(1, y1 - y0), cx = (x0 + x1) / 2;
+                    for (int y = Mathf.FloorToInt(y0); y <= Mathf.CeilToInt(y1); y++)
+                    {
+                        float half = (x1 - x0) / 2 * (1 - (y + 0.5f - y0) / h);
+                        for (int x = Mathf.FloorToInt(cx - half); x <= Mathf.CeilToInt(cx + half); x++)
+                            if (Mathf.Abs(x + 0.5f - cx) <= half + 0.01f) Plot(x, y, ink);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Paint bucket over the area of the same colour
+        void FloodFill(int sx, int sy, Color32 ink)
+        {
+            if (sx < 0 || sy < 0 || sx >= FlagW || sy >= FlagH) return;
+            var px = flagCanvas.GetPixels32();
+            var target = px[sy * FlagW + sx];
+            bool Same(Color32 p) => p.a == 0 && target.a == 0 || p.r == target.r && p.g == target.g && p.b == target.b && p.a == target.a;
+            if (Same(ink)) return;
+            var stack = new Stack<int>();
+            stack.Push(sy * FlagW + sx);
+            while (stack.Count > 0)
+            {
+                int i = stack.Pop();
+                if (!Same(px[i])) continue;
+                px[i] = ink;
+                int x = i % FlagW, y = i / FlagW;
+                if (x > 0) stack.Push(i - 1);
+                if (x < FlagW - 1) stack.Push(i + 1);
+                if (y > 0) stack.Push(i - FlagW);
+                if (y < FlagH - 1) stack.Push(i + FlagW);
+            }
+            flagCanvas.SetPixels32(px);
+        }
+
+        // The drawing as a PNG data URL, or null: "my colour" ink (black) goes out as pure white, which the
+        // game paints in the player's colour; other colours as drawn
         string ExportFlag()
         {
             var px = flagCanvas.GetPixels32();
             if (!px.Any(p => p.a > 0)) return null;
             var tex = new Texture2D(FlagW, FlagH, TextureFormat.RGBA32, false);
-            tex.SetPixels32(px.Select(p => new Color32(255, 255, 255, p.a)).ToArray());
+            tex.SetPixels32(px.Select(p => p.a == 0 ? new Color32(0, 0, 0, 0) : p.r == 0 && p.g == 0 && p.b == 0 ? new Color32(255, 255, 255, p.a) : p).ToArray());
             tex.Apply();
             var url = "data:image/png;base64," + Convert.ToBase64String(tex.EncodeToPNG());
             Destroy(tex);

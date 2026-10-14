@@ -73,6 +73,11 @@ Shader "RTS/SpriteLit"
             half4 frag (Varyings i) : SV_Target
             {
                 half4 tex = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * i.color;
+                // Frozen units (sprite colour alpha set to FrostAlpha by the game): frosted white-blue,
+                // keeping the figure's shading so it still reads
+                half frost = step(0.93, i.color.a) * step(i.color.a, 0.985);
+                half lum = dot(tex.rgb, half3(0.3, 0.59, 0.11));
+                tex.rgb = lerp(tex.rgb, lerp(half3(0.72, 0.86, 1.0), half3(1, 1, 1), saturate(lum * 1.4)), frost * 0.85);
                 if (tex.a < _Cutoff)
                 {
                     // Outline: an empty pixel touching the figure takes the owner's colour

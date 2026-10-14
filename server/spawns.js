@@ -13,9 +13,12 @@ const spawnPoints = (size, count) => {
   });
 };
 
-// Returns one spawn point per player, in a shuffled player order
-export function assignSpawns(playerIds, size) {
+// Teammates take neighbouring spots on the ring (players without a team are shuffled in on their own)
+export function assignSpawns(playerIds, size, teamOf = () => 0) {
   const points = spawnPoints(size, playerIds.length);
-  const shuffled = [...playerIds].sort(() => Math.random() - 0.5);
+  const order = new Map(playerIds.map((id) => [id, Math.random()]));
+  const teamKey = new Map([...new Set(playerIds.map(teamOf))].map((t) => [t, Math.random()]));
+  const key = (id) => (teamOf(id) ? teamKey.get(teamOf(id)) : order.get(id));
+  const shuffled = [...playerIds].sort((a, b) => key(a) - key(b) || order.get(a) - order.get(b));
   return new Map(shuffled.map((id, i) => [id, points[i]]));
 }

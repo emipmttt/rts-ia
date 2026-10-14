@@ -120,6 +120,9 @@ namespace RTS.Net
         void Abort() => ws?.Abort();
 #endif
 
+        const string StatePrefix = "[\"game:state\",";
+        string latestState;
+
         // Called every frame from a MonoBehaviour
         public void Pump()
         {
@@ -127,6 +130,11 @@ namespace RTS.Net
             while (mainThread.TryDequeue(out var a))
             {
                 try { a(); } catch (Exception e) { Debug.LogException(e); }
+            }
+            var state = Interlocked.Exchange(ref latestState, null);
+            if (state != null && handlers.TryGetValue("game:state", out var onState))
+            {
+                try { onState(JArray.Parse(state)[1]); } catch (Exception e) { Debug.LogException(e); }
             }
         }
 
@@ -239,6 +247,13 @@ namespace RTS.Net
             }
             else if (type == '2')
             {
+                // Game states replace each other: only the newest is kept and parsed (in Pump), so a
+                // slow frame never leaves a backlog of old states that makes this player lag behind
+                if (body.StartsWith(StatePrefix))
+                {
+                    Interlocked.Exchange(ref latestState, body);
+                    return;
+                }
                 // Optional namespace / ack id before the array are not used by this server
                 int start = body.IndexOf('[');
                 if (start < 0) return;

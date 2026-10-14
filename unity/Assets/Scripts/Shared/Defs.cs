@@ -81,7 +81,7 @@ namespace RTS
         {
             ["townCenter"] = new Stats { kind = "building", name = "Centro urbano", tiles = 7, hp = 2400, cost = new Cost(("wood", 275), ("stone", 200)), buildTime = 60, trains = new[] { "villager" }, age = 2, population = 5, attack = new AttackStats { damage = 6, range = 360, cooldown = 3 } },
             ["house"] = new Stats { kind = "building", name = "Casa", tiles = 2, hp = 500, cost = new Cost(("wood", 30)), buildTime = 15, population = 5 },
-            ["farm"] = new Stats { kind = "building", name = "Granja", tiles = 4, hp = 300, cost = new Cost(("wood", 60)), buildTime = 20, age = 2, farmFood = 250, reseedCost = new Cost(("wood", 40)) },
+            ["farm"] = new Stats { kind = "building", name = "Granja", tiles = 4, hp = 300, cost = new Cost(("wood", 60)), buildTime = 20, farmFood = 250, reseedCost = new Cost(("wood", 40)) },
             ["lumberCamp"] = new Stats { kind = "building", name = "Aserradero", tiles = 4, hp = 600, cost = new Cost(("wood", 100)), buildTime = 20, dropOff = true },
             ["monastery"] = new Stats { kind = "building", name = "Monasterio", tiles = 4, hp = 1100, cost = new Cost(("wood", 175), ("stone", 75)), buildTime = 35, age = 2, trains = new[] { "monk", "archer", "horseman" } },
             ["barracks"] = new Stats { kind = "building", name = "Cuartel", tiles = 4, hp = 1200, cost = new Cost(("wood", 150)), buildTime = 25, trains = new[] { "spearman", "swordsman", "bowman" } },
@@ -116,8 +116,8 @@ namespace RTS
             },
             ["water"] = new Dictionary<string, Stats>
             {
-                ["horseman"] = Entity["horseman"].With("Surfista de hielo", new AttackStats { damage = 7.5f, range = 0, cooldown = 1.8f, area = 60, knockback = 260, chill = 0.6f }, 133),
-                ["archer"] = Entity["archer"].With("Hidromante", new AttackStats { damage = 4.8f, range = 160, cooldown = 1.3f, chill = 0.75f }),
+                ["horseman"] = Entity["horseman"].With("Surfista de hielo", new AttackStats { damage = 7.5f, range = 0, cooldown = 1.8f, area = 60, knockback = 260, chill = 0.82f }, 133),
+                ["archer"] = Entity["archer"].With("Hidromante", new AttackStats { damage = 4.8f, range = 160, cooldown = 1.3f, chill = 0.88f }),
                 ["swordsman"] = Entity["swordsman"].With("Guerrero de agua", new AttackStats { damage = 8, range = 0, cooldown = 0.85f }, 74),
             },
         };
