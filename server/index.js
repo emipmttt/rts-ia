@@ -9,6 +9,15 @@ import { Server } from 'socket.io';
 import { PORT } from '../shared/constants.js';
 import { Lobby } from './Lobby.js';
 
+// Never let one unexpected error kill the server for every room: log it and keep running
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+// Memory now and then, to spot leaks in the logs
+setInterval(() => {
+  const m = process.memoryUsage();
+  console.log(`[mem] rss ${(m.rss / 1e6).toFixed(0)}MB heap ${(m.heapUsed / 1e6).toFixed(0)}MB`);
+}, 5 * 60 * 1000).unref();
+
 const app = express();
 // The game page: the Unity web build (unity/Web) when present, else the old built web client (dist).
 // Resolved from this file so the server can be started from any directory.

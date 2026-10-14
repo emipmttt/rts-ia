@@ -37,6 +37,7 @@ const FORMATION_SPACING = 34; // px between soldiers in a marching formation
 // Formation ranks from the front: shields and blades, then riders, then everything that shoots, monks last
 const FORMATION_RANK = { spearman: 0, swordsman: 1, guard: 1, villager: 4, horseman: 2, bowman: 3, archer: 3, monk: 4 };
 const BUILDING_OVERHANG = 1.06;
+const MAX_BUFFERED_BYTES = Number(process.env.MAX_BUFFERED_BYTES) || 2 * 1024 * 1024; // a socket with more unsent data than this skips states
 const FRONT = Math.PI / 2; // buildings face +y (south, toward the default camera): their doors are there // the 3D models are a little wider than their footprint
 const BUILDING_CELL = 2; // walkBlocked value of a building's tile (1 = water, tree or mine)
 // Unit orders a client may send, and the method handling each
@@ -205,7 +206,7 @@ export class GameRoom {
     for (const r of this.resources.values()) if (isSolidResource(r)) this.walkBlocked[r.ty * this.mapTiles + r.tx] = 1;
 
     this.io.to(this.id).emit('game:start', this.startPayload());
-    this.interval = setInterval(() => this.tick(), 1000 / TICK_RATE);
+    this.interval = setInterval(() => this.safeTick(), 1000 / TICK_RATE);
     this.broadcastRoom();
   }
 
@@ -1452,6 +1453,30 @@ export class GameRoom {
       + player.gatherLevel * SCORE.perUpgrade + (player.age - 1) * SCORE.perAge + central * SCORE.perCentralSecond);
   }
 
+  // A bug in one tick is logged instead of taking the whole server (every room) down
+  safeTick() {
+    try {
+      this.tick();
+    } catch (e) {
+      this.tickErrors = (this.tickErrors ?? 0) + 1;
+      if (this.tickErrors <= 5 || this.tickErrors % 100 === 0) console.error(`[room ${this.id}] tick error #${this.tickErrors}:`, e);
+    }
+  }
+
+  // Sockets of this room whose connection is far behind (a frozen tab, a slow link): their unsent
+  // data is already large, so this tick's state is skipped for them instead of piling up in memory
+  laggingSockets() {
+    const ids = this.io.sockets?.adapter?.rooms?.get(this.id);
+    if (!ids) return [];
+    const slow = [];
+    for (const id of ids) {
+      const conn = this.io.sockets.sockets.get(id)?.conn;
+      const buffered = (conn?.transport?.socket?.bufferedAmount ?? 0) + (conn?.writeBuffer?.length ?? 0) * 50000;
+      if (buffered > MAX_BUFFERED_BYTES) slow.push(id);
+    }
+    return slow;
+  }
+
   tick() {
     this.tickCount++;
     for (const e of this.entities.values()) { e.prevX = e.x; e.prevY = e.y; }
@@ -1499,7 +1524,9 @@ export class GameRoom {
     // Not volatile: a volatile state is dropped whenever the socket is still busy, and the resources
     // and shots sent just before it in the same tick kept it busy, so states never arrived. Clients
     // skip stale states themselves (they only read the newest one each frame).
-    this.io.to(this.id).emit('game:state', {
+    const lagging = this.laggingSockets();
+    if (lagging.length && this.tickCount % (TICK_RATE * 5) === 0) console.warn(`[room ${this.id}] ${lagging.length} lagging socket(s), skipping their states`);
+    this.io.to(this.id).except(lagging).emit('game:state', {
       players: [...this.players.values()].map(({ flag, ...p }) => p), // flags are sent once, at the start
       sheep: this.sheepState(),
       entities: [...this.entities.values()].map((e) => this.serialize(e)),

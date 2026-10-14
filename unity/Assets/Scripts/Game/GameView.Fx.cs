@@ -48,10 +48,13 @@ namespace RTS.Game
         readonly List<Marker> markers = new List<Marker>();
         readonly List<FxAnim> fxAnims = new List<FxAnim>();
 
+        const int MaxBits = 2500;
+
         // Loose pixels are only spawned where the player can see
         void AddBit(Vector3 pos, Vector3 vel, float life, int[] colors, int color = 0xffffff, float g = 0, float max = -1)
         {
-            if (InSight(pos)) bits.Add(new Bit { pos = pos, vel = vel, life = life, max = max > 0 ? max : life, colors = colors, color = color, g = g });
+            // Capped: a huge battle on screen would otherwise pile up tens of thousands and stall the frame
+            if (bits.Count < MaxBits && InSight(pos)) bits.Add(new Bit { pos = pos, vel = vel, life = life, max = max > 0 ? max : life, colors = colors, color = color, g = g });
         }
 
         // Scatters n loose pixels from pos: `speed` outward over the ground, `up` extra upward kick,
