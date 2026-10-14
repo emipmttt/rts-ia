@@ -1,0 +1,5 @@
+<!-- Keep what the web (IL2CPP) build would otherwise strip: Newtonsoft reflects over our protocol types -->
+<linker>
+  <assembly fullname="Assembly-CSharp" preserve="all" />
+  <assembly fullname="Newtonsoft.Json" preserve="all" />
+</linker>

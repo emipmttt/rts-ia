@@ -25,7 +25,7 @@ namespace RTS.World
         int n, chunksPerSide, margin;
         Chunk[] chunks;
         readonly HashSet<long> cleared = new HashSet<long>();
-        readonly Vector4[] pushers = new Vector4[MaxPushers];
+        Vector4[] pushers;
         Material material;
 
         static long Key(int x, int y) => ((long)x << 32) | (uint)y;
@@ -174,7 +174,8 @@ namespace RTS.World
         // Units brushing through the grass: world (x, z), radius, strength 0..1
         public void SetPushers(List<Vector4> list)
         {
-            int count = Mathf.Min(list.Count, MaxPushers);
+            pushers ??= new Vector4[MaxPushers];
+            int count = list == null ? 0 : Mathf.Min(list.Count, MaxPushers);
             for (int i = 0; i < MaxPushers; i++) pushers[i] = i < count ? list[i] : Vector4.zero;
             Shader.SetGlobalVectorArray("_GrassPushers", pushers);
             Shader.SetGlobalFloat("_GrassPusherCount", count);
