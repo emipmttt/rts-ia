@@ -8,6 +8,11 @@ export const FACTIONS = [
   { id: 'yellow', color: 0xe2bf5c },
   { id: 'purple', color: 0xa489c8 },
   { id: 'black', color: 0x7e8794 },
+  { id: 'green', color: 0x7dbd6c },
+  { id: 'orange', color: 0xe8975a },
+  { id: 'teal', color: 0x5cbcb8 },
+  { id: 'pink', color: 0xe08ab8 },
+  { id: 'brown', color: 0xa8835e },
 ];
 // Civilizations each player picks in the waiting room; they change the units' art
 export const CIVILIZATIONS = [
@@ -72,13 +77,13 @@ export const unitStats = (type, civ) => {
   const over = CIV_STATS[civ]?.[type];
   return over ? { ...ENTITY_STATS[type], ...over } : ENTITY_STATS[type];
 };
-export const MAX_PLAYERS_PER_ROOM = FACTIONS.length;
+export const MAX_PLAYERS_PER_ROOM = FACTIONS.length; // 10
 export const MAX_TEAMS = 4; // team 0 = on your own
 
 // World: square grid of tiles
 export const TILE_SIZE = 40;
 // Map side in tiles grows with the number of players (big buildings need roomy bases)
-export const mapTilesFor = (players) => Math.min(144, Math.max(112, 96 + players * 8));
+export const mapTilesFor = (players) => Math.min(168, Math.max(112, 96 + players * 8));
 
 // Water can't be crossed except over bridges; neither can be built on
 export const Terrain = {

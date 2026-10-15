@@ -578,25 +578,36 @@ namespace RTS
         void DrawRoom(float W, float H)
         {
             if (currentRoom == null) return;
-            float w = 760, h = Mathf.Min(H - 30, 600);
+            float w = 760, h = Mathf.Min(H - 30, 700);
             var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
             appRects.Add(panel);
             GUI.Box(panel, GUIContent.none, Skin.Paper);
             GUI.Label(new Rect(panel.x + 80, panel.y - 18, w - 160, 64), currentRoom.name, Skin.Ribbon("blue"));
             float x = panel.x + 34, y = panel.y + 58, cw = w - 68;
             bool isHost = currentRoom.hostId == myId;
-            GUI.Label(new Rect(x, y, cw, 26), isHost ? "Eres el anfitrión: organiza los equipos e inicia la partida cuando estén todos." : "Esperando a que el anfitrión inicie la partida…", Skin.LabelDark);
+            GUI.Label(new Rect(x, y, cw - 120, 26), isHost ? "Eres el anfitrión: organiza los equipos e inicia la partida cuando estén todos." : "Esperando a que el anfitrión inicie la partida…", Skin.LabelDark);
+            GUI.Label(new Rect(x + cw - 110, y, 110, 26), $"{currentRoom.playerList.Count}/{C.Factions.Length} jugadores", new GUIStyle(Skin.SmallDark) { alignment = TextAnchor.MiddleRight });
             y += 34;
             // Column heads
             GUI.Label(new Rect(x + 24, y, 190, 22), "Jugador", Skin.SmallDark);
             GUI.Label(new Rect(x + 220, y, 320, 22), "Civilización", Skin.SmallDark);
             GUI.Label(new Rect(x + cw - 230, y, 230, 22), "Equipo", Skin.SmallDark);
             y += 24;
+            // Player list scrolls when the room is too full for the panel (up to 10 players)
+            const float Row = 38;
+            float listBottom = panel.yMax - 112 - 64 - (isHost ? 46 : 0);
+            float contentH = currentRoom.playerList.Count * Row + 46;
+            var listRect = new Rect(x - 8, y, cw + 16, Mathf.Max(80, listBottom - y));
+            bool scrolls = contentH > listRect.height;
+            roomPlayersScroll = GUI.BeginScrollView(listRect, roomPlayersScroll, new Rect(0, 0, cw + (scrolls ? 0 : 16), contentH));
+            float ox = x;
+            x = 8; y = 4;
+            if (scrolls) cw -= 16;
             foreach (var p in currentRoom.playerList)
             {
                 bool me = p.id == myId;
-                if (me) Skin.Rect(new Rect(x - 8, y - 4, cw + 16, 82), new Color(1, 0.95f, 0.75f, 0.45f));
-                Skin.Rect(new Rect(x, y + 8, 16, 16), GameAssets.Hex(p.color));
+                if (me) Skin.Rect(new Rect(x - 8, y - 3, cw + 16, Row + 44), new Color(1, 0.95f, 0.75f, 0.45f));
+                Skin.Rect(new Rect(x, y + 9, 16, 16), GameAssets.Hex(p.color));
                 GUI.Label(new Rect(x + 24, y + 2, 190, 30), $"{(p.id == currentRoom.hostId ? "★ " : "")}{p.name}{(me ? " (tú)" : "")}", Skin.LabelDark);
                 // Civilization: my own is a picker, everyone else's is shown as text
                 if (me)
@@ -625,20 +636,22 @@ namespace RTS
                     }
                 }
                 else GUI.Label(new Rect(tx, y + 4, 230, 30), TeamName(p.team), Skin.SmallDark);
-                y += 40;
+                y += Row;
                 if (me) { DrawColorPicker(x + 24, y, p); y += 44; }
             }
+            GUI.EndScrollView();
+            x = ox; cw = w - 68;
+            y = listRect.yMax + 6;
             if (isHost)
             {
-                y += 4;
                 GUI.Label(new Rect(x, y + 8, 150, 26), "Repartir equipos:", Skin.SmallDark);
                 var small = new GUIStyle(Skin.Button) { fontSize = 13 };
                 if (GUI.Button(new Rect(x + 140, y, 120, 34), "2 equipos", small)) socket.Emit("room:autoteams", 2);
                 if (currentRoom.playerList.Count >= 3 && GUI.Button(new Rect(x + 266, y, 120, 34), "3 equipos", small)) socket.Emit("room:autoteams", 3);
-                if (GUI.Button(new Rect(x + 392, y, 160, 34), "Todos contra todos", small)) socket.Emit("room:autoteams", 0);
-                y += 44;
+                if (currentRoom.playerList.Count >= 4 && GUI.Button(new Rect(x + 392, y, 120, 34), "4 equipos", small)) socket.Emit("room:autoteams", 4);
+                if (GUI.Button(new Rect(x + 518, y, 160, 34), "Todos contra todos", small)) socket.Emit("room:autoteams", 0);
+                y += 46;
             }
-            y = Mathf.Max(y + 6, panel.y + 330);
             GUI.enabled = isHost;
             bool central = GUI.Toggle(new Rect(x, y, cw, 30), currentRoom.central, " Fortaleza central", Skin.Toggle);
             if (central != currentRoom.central) socket.Emit("room:settings", new { central });
@@ -651,6 +664,8 @@ namespace RTS
             errStyle.normal.textColor = new Color(0.75f, 0.15f, 0.1f);
             GUI.Label(new Rect(x, panel.yMax - 54, cw, 30), roomError, errStyle);
         }
+
+        Vector2 roomPlayersScroll;
 
         static string TeamName(int team) => team == 0 ? "sin equipo" : $"equipo {team}";
 

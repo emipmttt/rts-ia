@@ -17,6 +17,7 @@ namespace RTS
         public static readonly (string id, int color)[] Factions =
         {
             ("blue", 0x6c9bd6), ("red", 0xd9776d), ("yellow", 0xe2bf5c), ("purple", 0xa489c8), ("black", 0x7e8794),
+            ("green", 0x7dbd6c), ("orange", 0xe8975a), ("teal", 0x5cbcb8), ("pink", 0xe08ab8), ("brown", 0xa8835e),
         };
         public static readonly (string id, string name)[] Civilizations = { ("air", "Aire"), ("fire", "Fuego"), ("earth", "Tierra"), ("water", "Agua") };
     }

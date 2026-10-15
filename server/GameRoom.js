@@ -172,6 +172,7 @@ export class GameRoom {
     const used = new Set([...this.players.values()].map((p) => p.faction));
     const free = FACTIONS.filter((f) => !used.has(f.id));
     const faction = free[Math.floor(Math.random() * free.length)];
+    if (!faction) return false; // room full
     this.players.set(playerId, {
       id: playerId, name, faction: faction.id, color: faction.color, civ: CIVILIZATIONS[0].id, team: 0, stock: { ...STARTING_STOCK }, defeated: false,
       connected: true, pop: 0, popCap: 0, stats: { trained: 0, lost: 0, kills: 0, gathered: 0 },
