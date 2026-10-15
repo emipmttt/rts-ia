@@ -183,9 +183,14 @@ namespace RTS.Game
                 if (s.door == null) return;
                 s.doorBase = s.door.localPosition;
             }
-            bool open = false;
-            foreach (var u in sprites.Values)
-                if (!u.isBuilding && u.s.owner == s.s.owner && Mathf.Abs(u.gx - s.s.x) < 90 && Mathf.Abs(u.gy - s.s.y) < 90) { open = true; break; }
+            // Who is near is checked a few times a second (staggered per gate), not every frame
+            bool open = s.doorWasOpen;
+            if ((Time.frameCount + s.s.id) % 6 == 0)
+            {
+                open = false;
+                foreach (var u in sprites.Values)
+                    if (!u.isBuilding && u.s.owner == s.s.owner && Mathf.Abs(u.gx - s.s.x) < 90 && Mathf.Abs(u.gy - s.s.y) < 90) { open = true; break; }
+            }
             if (open != s.doorWasOpen) { SfxAt(open ? "gateOpen" : "gateClose", s.s.x, s.s.y); s.doorWasOpen = open; }
             s.doorOpen = Mathf.MoveTowards(s.doorOpen, open ? 1 : 0, dt * 2.5f);
             s.door.localPosition = new Vector3(s.doorBase.x, s.doorBase.y - s.doorOpen * 1.5f, s.doorBase.z);

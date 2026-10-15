@@ -68,7 +68,7 @@ namespace RTS
             set
             {
                 PlayerPrefs.SetInt("muted", value ? 1 : 0);
-                AudioListener.volume = value ? 0 : 1;
+                ApplyVolumes();
             }
         }
 
@@ -76,7 +76,6 @@ namespace RTS
         {
             instance = this;
             gameObject.AddComponent<AudioListener>();
-            AudioListener.volume = Muted ? 0 : 1;
             for (int i = 0; i < MaxVoices; i++)
             {
                 var src = gameObject.AddComponent<AudioSource>();
@@ -92,6 +91,14 @@ namespace RTS
             river.loop = true;
             river.volume = 0;
             river.playOnAwake = false;
+            ApplyVolumes();
+        }
+
+        // Master volume (options) or silence, and the ambience level
+        public static void ApplyVolumes()
+        {
+            AudioListener.volume = Muted ? 0 : Settings.MasterVolume;
+            if (instance != null && instance.ambient != null) instance.ambient.volume = AmbientVolume * Settings.AmbientVolume * 1.6f;
         }
 
         AudioClip Clip(string file)
@@ -135,7 +142,7 @@ namespace RTS
         public static void SetRiver(float amount)
         {
             if (instance == null || instance.river == null) return;
-            instance.river.volume = Mathf.MoveTowards(instance.river.volume, Mathf.Clamp01(amount) * 0.35f, Time.unscaledDeltaTime * 0.3f);
+            instance.river.volume = Mathf.MoveTowards(instance.river.volume, Mathf.Clamp01(amount) * 0.35f * Settings.AmbientVolume, Time.unscaledDeltaTime * 0.3f);
         }
 
         public static void StopAmbient()

@@ -220,7 +220,16 @@ namespace RTS.Game
             if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) pan.x += 1;
             if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow)) pan.y += 1;
             if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow)) pan.y -= 1;
-            if (pan != Vector2.zero && !Ctrl) rts.Pan(pan, dt);
+            // Edge scrolling (an option): the pointer against a screen edge pans that way
+            if (Settings.EdgeScroll && Application.isFocused && pan == Vector2.zero)
+            {
+                const float Edge = 6;
+                if (mouse.x <= Edge) pan.x -= 1;
+                else if (mouse.x >= Screen.width - Edge) pan.x += 1;
+                if (mouse.y <= Edge) pan.y -= 1;
+                else if (mouse.y >= Screen.height - Edge) pan.y += 1;
+            }
+            if (pan != Vector2.zero && !Ctrl) rts.Pan(pan, dt * Settings.CameraSpeed);
             if (Input.GetKey(KeyCode.Q)) rts.Rotate(-90 * dt);
             if (Input.GetKey(KeyCode.E)) rts.Rotate(90 * dt);
             float wheel = Input.mouseScrollDelta.y;

@@ -54,7 +54,7 @@ namespace RTS.Game
         void AddBit(Vector3 pos, Vector3 vel, float life, int[] colors, int color = 0xffffff, float g = 0, float max = -1)
         {
             // Capped: a huge battle on screen would otherwise pile up tens of thousands and stall the frame
-            if (bits.Count < MaxBits && InSight(pos)) bits.Add(new Bit { pos = pos, vel = vel, life = life, max = max > 0 ? max : life, colors = colors, color = color, g = g });
+            if (bits.Count < (Settings.Particles ? MaxBits : MaxBits / 6) && InSight(pos)) bits.Add(new Bit { pos = pos, vel = vel, life = life, max = max > 0 ? max : life, colors = colors, color = color, g = g });
         }
 
         // Scatters n loose pixels from pos: `speed` outward over the ground, `up` extra upward kick,

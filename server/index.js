@@ -76,7 +76,13 @@ io.on('connection', (socket) => {
   socket.on('room:leave', () => lobby.leave(socket));
   socket.on('room:start', () => lobby.start(socket));
   socket.on('room:civ', (civ) => lobby.civ(socket, civ));
-  socket.on('room:team', (team) => lobby.roomOf(socket)?.setTeam(socket.data.playerId, team));
+  // A number sets my own team; { playerId, team } is the host arranging someone else's
+  socket.on('room:team', (d) => {
+    const room = lobby.roomOf(socket);
+    if (typeof d === 'number') room?.setTeam(socket.data.playerId, d);
+    else if (d && typeof d === 'object') room?.setTeam(socket.data.playerId, d.team, d.playerId);
+  });
+  socket.on('room:autoteams', (count) => lobby.roomOf(socket)?.autoTeams(socket.data.playerId, count));
   socket.on('room:color', (faction) => lobby.roomOf(socket)?.setColor(socket.data.playerId, faction));
   socket.on('room:settings', (settings) => lobby.settings(socket, settings ?? {}));
   socket.on('chat', (text) => lobby.roomOf(socket)?.handleChat(socket.data.playerId, text));

@@ -47,6 +47,7 @@ namespace RTS.Game
 
         void OnGUI()
         {
+            if (Demo) return;
             Skin.Ensure();
             float k = Skin.Scale;
             GUI.matrix = Matrix4x4.Scale(new Vector3(k, k, 1));
@@ -88,12 +89,31 @@ namespace RTS.Game
 
         // ---------- Top bar ----------
 
+        // Counted once per state, not on every OnGUI pass (several per frame): with hundreds of units
+        // the LINQ here was a steady source of garbage and GC stalls in big battles
+        int hudVillagers, hudIdle, hudArmy, hudCountedState = -1;
+
+        void CountHud()
+        {
+            if (hudCountedState == stateCount) return;
+            hudCountedState = stateCount;
+            hudVillagers = hudIdle = hudArmy = 0;
+            foreach (var s in sprites.Values)
+            {
+                if (s.s.owner != myId) continue;
+                if (s.s.type == "villager")
+                {
+                    hudVillagers++;
+                    if (s.s.task == null && s.s.action != "moving") hudIdle++;
+                }
+                else if (Soldiers.Contains(s.s.type)) hudArmy++;
+            }
+        }
+
         void DrawResourceBar()
         {
-            var mine = sprites.Values.Where(s => s.s.owner == myId).ToList();
-            int villagers = mine.Count(s => s.s.type == "villager");
-            int idle = IdleVillagers().Count;
-            int army = mine.Count(s => Soldiers.Contains(s.s.type));
+            CountHud();
+            int villagers = hudVillagers, idle = hudIdle, army = hudArmy;
             bool popFull = popUsed >= popCap;
             int Get(string r) => stock.TryGetValue(r, out var v) ? v : 0;
 
@@ -160,12 +180,15 @@ namespace RTS.Game
         // ---------- Menu (Esc) ----------
 
         const float MenuButtonSize = 40;
-        bool menuOpen, confirmLeave;
+        bool menuOpen, confirmLeave, optionsOpen;
+        Vector2 optionsScroll;
+        float optionsHeight = 600;
 
         void ToggleMenu()
         {
             menuOpen = !menuOpen;
             confirmLeave = false;
+            optionsOpen = false;
             Sfx.Play("click");
         }
 
@@ -183,6 +206,18 @@ namespace RTS.Game
         {
             Block(new Rect(0, 0, W, H));
             Skin.Rect(new Rect(0, 0, W, H), new Color(0, 0, 0, 0.45f));
+            if (optionsOpen)
+            {
+                float ow = 600, oh = Mathf.Min(H - 40, 690);
+                var op = new Rect((W - ow) / 2, (H - oh) / 2, ow, oh);
+                GUI.Box(op, GUIContent.none, Skin.Paper);
+                GUI.Label(new Rect(op.x + 30, op.y + 18, 300, 30), "Opciones", new GUIStyle(Skin.TitleDark) { fontSize = 24, alignment = TextAnchor.MiddleLeft });
+                if (GUI.Button(new Rect(op.xMax - 130, op.y + 16, 110, 36), "← Volver", Skin.Button)) { Sfx.Play("click"); optionsOpen = false; }
+                optionsScroll = GUI.BeginScrollView(new Rect(op.x + 30, op.y + 64, ow - 50, oh - 84), optionsScroll, new Rect(0, 0, ow - 80, optionsHeight));
+                optionsHeight = RTS.UI.OptionsPanel.Draw(new Rect(0, 0, ow - 80, 2000));
+                GUI.EndScrollView();
+                return;
+            }
             float w = 340, h = confirmLeave ? 230 : 322;
             var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
             GUI.Box(panel, GUIContent.none, Skin.Paper);
@@ -203,15 +238,11 @@ namespace RTS.Game
             y += 46;
             if (GUI.Button(new Rect(bx, y, bw, 44), "Continuar", Skin.Button)) ToggleMenu();
             y += 52;
+            if (GUI.Button(new Rect(bx, y, bw, 44), "Opciones", Skin.Button)) { Sfx.Play("click"); optionsOpen = true; }
+            y += 52;
             if (GUI.Button(new Rect(bx, y, bw, 44), Sfx.Muted ? "Activar sonido (M)" : "Silenciar (M)", Skin.Button))
             {
                 Sfx.Muted = !Sfx.Muted;
-                Sfx.Play("click");
-            }
-            y += 52;
-            if (GUI.Button(new Rect(bx, y, bw, 44), Materials.Outlines ? "Contornos de color: sí" : "Contornos de color: no", Skin.Button))
-            {
-                Materials.Outlines = !Materials.Outlines;
                 Sfx.Play("click");
             }
             y += 52;

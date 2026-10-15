@@ -18,8 +18,14 @@ namespace RTS
     {
         public static App Instance { get; private set; }
 
-        enum Screen { Lobby, Room, Game }
-        Screen screen = Screen.Lobby;
+        // Main menu -> Jugar (lobby: name, server, flag, rooms) -> room -> game; Opciones and Cómo jugar
+        // hang off the main menu. Everything but the game shows the animated backdrop behind it.
+        enum Screen { Menu, Options, Help, Lobby, Room, Game }
+        Screen screen = Screen.Menu;
+        MenuBackdrop backdrop;
+        float fpsSmooth;
+        bool reconnecting;
+        float reconnectedAt = -1;
         SocketIO socket;
         string myId;
         string token;
@@ -114,6 +120,7 @@ namespace RTS
 
             BuildScene();
             gameObject.AddComponent<Sfx>();
+            Settings.Apply();
             Connect();
         }
 
@@ -201,13 +208,20 @@ namespace RTS
         {
             socket?.Dispose();
             socket = new SocketIO(server, new { token });
-            socket.OnConnect += () => lobbyError = "";
+            socket.OnConnect += () =>
+            {
+                lobbyError = "";
+                if (reconnecting) reconnectedAt = Time.unscaledTime;
+            };
+            // A dropped connection mid-game keeps the game on screen with a notice: the socket
+            // reconnects by itself and the server sends the game again. Only if it doesn't (the game
+            // is gone) do we fall back to the lobby.
             socket.OnDisconnect += () =>
             {
-                currentRoom = null;
-                LeaveGame();
-                screen = Screen.Lobby;
                 lobbyError = "Desconectado del servidor. Reconectando…";
+                if (game != null) { reconnecting = true; reconnectedAt = -1; return; }
+                currentRoom = null;
+                if (screen == Screen.Room || screen == Screen.Game) screen = Screen.Lobby;
             };
             socket.On("session", d =>
             {
@@ -242,6 +256,8 @@ namespace RTS
             {
                 end = null;
                 LeaveGame();
+                if (backdrop != null) { Destroy(backdrop.gameObject); backdrop = null; }
+                reconnecting = false;
                 screen = Screen.Game;
                 Sfx.Play("start");
                 Sfx.StartAmbient();
@@ -304,8 +320,18 @@ namespace RTS
             socket?.Pump();
             if (Input.GetKeyDown(KeyCode.M) && GUIUtility.keyboardControl == 0) Sfx.Muted = !Sfx.Muted;
             Skin.Scale = Mathf.Max(1, UnityEngine.Screen.height / 900f);
-            // Slow orbit over nothing in particular while in the menus
-            if (game == null) cam.transform.rotation = Quaternion.Euler(8, Time.unscaledTime * 3, 0);
+            // Reconnected but the server didn't send our game back within a few seconds: it's over
+            if (reconnecting && reconnectedAt > 0 && Time.unscaledTime - reconnectedAt > 4)
+            {
+                reconnecting = false;
+                currentRoom = null;
+                LeaveGame();
+                screen = Screen.Lobby;
+                lobbyError = "La partida ya no está disponible";
+            }
+            // Outside a game the menus show two villages at war behind them
+            if (game == null && backdrop == null) { backdrop = MenuBackdrop.Create(cam); Sfx.StartAmbient(); }
+            fpsSmooth = Mathf.Lerp(fpsSmooth, 1 / Mathf.Max(0.0001f, Time.unscaledDeltaTime), 0.05f);
         }
 
         void OnDestroy()
@@ -328,9 +354,18 @@ namespace RTS
             GUI.depth = -10; // over the game HUD
             if (Event.current.type == EventType.Layout) appRects.Clear();
 
-            if (screen == Screen.Lobby) DrawLobby(W, H);
+            if (screen == Screen.Menu) DrawMainMenu(W, H);
+            else if (screen == Screen.Options) DrawOptions(W, H);
+            else if (screen == Screen.Help) DrawHelp(W, H);
+            else if (screen == Screen.Lobby) DrawLobby(W, H);
             else if (screen == Screen.Room) DrawRoom(W, H);
             if (end != null) DrawEnd(W, H);
+            if (reconnecting && game != null)
+            {
+                var rr = new Rect(W / 2 - 200, 70, 400, 44);
+                GUI.Box(rr, "Conexión perdida · reconectando…", new GUIStyle(Skin.Ribbon("red", 50)) { fontSize = 18 });
+            }
+            if (Settings.ShowFps) GUI.Label(new Rect(8, H - 26, 120, 22), $"{Mathf.RoundToInt(fpsSmooth)} FPS", Skin.Small);
 
             // Sound toggle (M)
             var muteRect = new Rect(W - 54, H - 54, 44, 44);
@@ -338,12 +373,119 @@ namespace RTS
             if (GUI.Button(muteRect, Sfx.Muted ? "×♪" : "♪", Skin.Button)) Sfx.Muted = !Sfx.Muted;
         }
 
+        // ---------- Main menu ----------
+
+        const string GameTitle = "Tiny Swords RTS";
+
+        void DrawMainMenu(float W, float H)
+        {
+            // Title over the scene, buttons in a column on the left like a classic RTS menu
+            var title = new GUIStyle(Skin.Title) { fontSize = 54, alignment = TextAnchor.MiddleLeft };
+            float x = Mathf.Max(40, W * 0.08f), y = H * 0.2f;
+            Shadowed(new Rect(x, y, W - x, 70), GameTitle, title);
+            Shadowed(new Rect(x + 4, y + 64, W - x, 30), "Estrategia en tiempo real · aire, fuego, tierra y agua", new GUIStyle(Skin.Label) { fontSize = 18 });
+            y += 130;
+            float bw = 300, bh = 54;
+            bool connected = socket != null && socket.Connected;
+            if (MenuButton(new Rect(x, y, bw, bh), "Jugar", true)) screen = Screen.Lobby;
+            y += bh + 12;
+            if (MenuButton(new Rect(x, y, bw, bh), "Opciones", false)) screen = Screen.Options;
+            y += bh + 12;
+            if (MenuButton(new Rect(x, y, bw, bh), "Cómo jugar", false)) screen = Screen.Help;
+#if !UNITY_WEBGL
+            y += bh + 12;
+            if (MenuButton(new Rect(x, y, bw, bh), "Salir", false, true)) Application.Quit();
+#endif
+            var status = connected ? $"Conectado · servidor {ServerName.ToLower()} · {rooms.Count} sala{(rooms.Count == 1 ? "" : "s")}" : $"Conectando con el servidor {ServerName.ToLower()}…";
+            Shadowed(new Rect(x, H - 40, W - x, 24), status, Skin.Small);
+        }
+
+        bool MenuButton(Rect r, string text, bool primary, bool danger = false)
+        {
+            appRects.Add(r);
+            var style = new GUIStyle(danger ? Skin.RedButton : Skin.Button) { fontSize = primary ? 24 : 20 };
+            bool hit = GUI.Button(r, text, style);
+            if (hit) Sfx.Play("click");
+            return hit;
+        }
+
+        static void Shadowed(Rect r, string text, GUIStyle style)
+        {
+            var old = style.normal.textColor;
+            style.normal.textColor = new Color(0, 0, 0, 0.55f);
+            GUI.Label(new Rect(r.x + 2, r.y + 2, r.width, r.height), text, style);
+            style.normal.textColor = old;
+            GUI.Label(r, text, style);
+        }
+
+        bool BackButton(Rect panel)
+        {
+            var r = new Rect(panel.x + 14, panel.y + 14, 96, 34);
+            appRects.Add(r);
+            if (!GUI.Button(r, "← Volver", new GUIStyle(Skin.Button) { fontSize = 14 })) return false;
+            Sfx.Play("click");
+            return true;
+        }
+
+        void DrawOptions(float W, float H)
+        {
+            float w = 600, h = Mathf.Min(H - 40, 690);
+            var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
+            appRects.Add(panel);
+            GUI.Box(panel, GUIContent.none, Skin.Paper);
+            GUI.Label(new Rect(panel.x + 120, panel.y - 18, w - 240, 64), "Opciones", Skin.Ribbon("blue"));
+            if (BackButton(panel)) screen = Screen.Menu;
+            optionsScroll = GUI.BeginScrollView(new Rect(panel.x + 30, panel.y + 60, w - 50, h - 80), optionsScroll, new Rect(0, 0, w - 80, optionsHeight));
+            optionsHeight = OptionsPanel.Draw(new Rect(0, 0, w - 80, 2000));
+            GUI.EndScrollView();
+        }
+        Vector2 optionsScroll;
+        float optionsHeight = 600;
+
+        static readonly (string keys, string what)[] Controls =
+        {
+            ("Clic izquierdo", "Seleccionar (arrastra para seleccionar en grupo)"),
+            ("Doble clic", "Todas las unidades o edificios de ese tipo en pantalla"),
+            ("Clic derecho", "Mover, recolectar, construir o atacar"),
+            ("Shift + clic derecho", "Encadenar órdenes"),
+            ("Ctrl/Cmd + 1-9 · 1-9", "Guardar / elegir un grupo (doble pulsación: centrar)"),
+            ("Z X C V B N F G J K", "Botones de la barra de comandos"),
+            ("H · .", "Centro urbano · aldeano desocupado"),
+            ("WASD / flechas · rueda", "Mover la cámara · zoom"),
+            ("Q / E · botón central", "Girar la cámara · arrastrar"),
+            ("Esc · M", "Menú y opciones · silenciar"),
+        };
+
+        void DrawHelp(float W, float H)
+        {
+            float w = 680, h = Mathf.Min(H - 40, 640);
+            var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
+            appRects.Add(panel);
+            GUI.Box(panel, GUIContent.none, Skin.Paper);
+            GUI.Label(new Rect(panel.x + 120, panel.y - 18, w - 240, 64), "Cómo jugar", Skin.Ribbon("blue"));
+            if (BackButton(panel)) screen = Screen.Menu;
+            float x = panel.x + 40, y = panel.y + 66, cw = w - 80;
+            var wrap = new GUIStyle(Skin.LabelDark) { wordWrap = true, fontSize = 15 };
+            GUI.Label(new Rect(x, y, cw, 90), "Recolecta comida, madera, oro y piedra con tus aldeanos, construye casas para crecer y cuarteles para entrenar tu ejército. Avanza de edad en el Centro urbano para desbloquear edificios y unidades. Gana destruyendo los Centros urbanos rivales o dominando la Fortaleza central.", wrap);
+            y += 100;
+            GUI.Label(new Rect(x, y, cw, 26), "Controles", new GUIStyle(Skin.TitleDark) { fontSize = 18, alignment = TextAnchor.MiddleLeft });
+            y += 32;
+            foreach (var (keys, what) in Controls)
+            {
+                GUI.Label(new Rect(x, y, 230, 24), keys, new GUIStyle(Skin.LabelDark) { fontStyle = FontStyle.Bold });
+                GUI.Label(new Rect(x + 240, y, cw - 240, 24), what, Skin.SmallDark);
+                y += 28;
+            }
+        }
+
         void DrawLobby(float W, float H)
         {
             float w = 560, h = Mathf.Min(H - 40, 700);
             var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
+            appRects.Add(panel);
             GUI.Box(panel, GUIContent.none, Skin.Paper);
-            GUI.Label(new Rect(panel.x + 60, panel.y - 18, w - 120, 64), "Tiny Swords RTS", Skin.Ribbon("blue"));
+            if (BackButton(panel)) { screen = Screen.Menu; return; }
+            GUI.Label(new Rect(panel.x + 120, panel.y - 18, w - 240, 64), "Jugar", Skin.Ribbon("blue"));
             float x = panel.x + 34, y = panel.y + 60, cw = w - 68;
 
             GUI.Label(new Rect(x, y, 120, 30), "Tu nombre", Skin.LabelDark);
@@ -436,71 +578,96 @@ namespace RTS
         void DrawRoom(float W, float H)
         {
             if (currentRoom == null) return;
-            float w = 720, h = 540;
+            float w = 760, h = Mathf.Min(H - 30, 600);
             var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
+            appRects.Add(panel);
             GUI.Box(panel, GUIContent.none, Skin.Paper);
-            GUI.Label(new Rect(panel.x + 60, panel.y - 18, w - 120, 64), currentRoom.name, Skin.Ribbon("blue"));
-            float x = panel.x + 34, y = panel.y + 60, cw = w - 68;
+            GUI.Label(new Rect(panel.x + 80, panel.y - 18, w - 160, 64), currentRoom.name, Skin.Ribbon("blue"));
+            float x = panel.x + 34, y = panel.y + 58, cw = w - 68;
             bool isHost = currentRoom.hostId == myId;
-            GUI.Label(new Rect(x, y, cw, 30), isHost ? "Eres el anfitrión. Inicia la partida cuando estén todos." : "Esperando a que el anfitrión inicie la partida…", Skin.LabelDark);
-            y += 40;
+            GUI.Label(new Rect(x, y, cw, 26), isHost ? "Eres el anfitrión: organiza los equipos e inicia la partida cuando estén todos." : "Esperando a que el anfitrión inicie la partida…", Skin.LabelDark);
+            y += 34;
+            // Column heads
+            GUI.Label(new Rect(x + 24, y, 190, 22), "Jugador", Skin.SmallDark);
+            GUI.Label(new Rect(x + 220, y, 320, 22), "Civilización", Skin.SmallDark);
+            GUI.Label(new Rect(x + cw - 230, y, 230, 22), "Equipo", Skin.SmallDark);
+            y += 24;
             foreach (var p in currentRoom.playerList)
             {
+                bool me = p.id == myId;
+                if (me) Skin.Rect(new Rect(x - 8, y - 4, cw + 16, 82), new Color(1, 0.95f, 0.75f, 0.45f));
                 Skin.Rect(new Rect(x, y + 8, 16, 16), GameAssets.Hex(p.color));
-                GUI.Label(new Rect(x + 24, y + 2, 190, 30), $"{p.name}{(p.id == myId ? " (tú)" : "")}", Skin.LabelDark);
+                GUI.Label(new Rect(x + 24, y + 2, 190, 30), $"{(p.id == currentRoom.hostId ? "★ " : "")}{p.name}{(me ? " (tú)" : "")}", Skin.LabelDark);
                 // Civilization: my own is a picker, everyone else's is shown as text
-                if (p.id == myId)
+                if (me)
                 {
                     for (int i = 0; i < C.Civilizations.Length; i++)
                     {
                         var (id, name) = C.Civilizations[i];
                         bool on = p.civ == id;
-                        if (GUI.Toggle(new Rect(x + 220 + i * 82, y, 78, 34), on, name, Skin.Button) && !on) socket.Emit("room:civ", id);
+                        if (GUI.Toggle(new Rect(x + 220 + i * 70, y, 66, 34), on, name, new GUIStyle(Skin.Button) { fontSize = 13 }) && !on) socket.Emit("room:civ", id);
                     }
                 }
-                else GUI.Label(new Rect(x + 220, y + 4, 200, 30), (C.Civilizations.FirstOrDefault(c => c.id == p.civ).name ?? "") + "  ·  " + TeamName(p.team), Skin.SmallDark);
-                if (p.id == currentRoom.hostId) GUI.Label(new Rect(x + cw - 90, y + 4, 90, 30), "anfitrión", Skin.SmallDark);
+                else GUI.Label(new Rect(x + 220, y + 4, 200, 30), C.Civilizations.FirstOrDefault(c => c.id == p.civ).name ?? "", Skin.SmallDark);
+                // Team: anyone sets their own, the host sets everybody's (AoE style: — = alone)
+                float tx = x + cw - 230;
+                if (me || isHost)
+                {
+                    for (int t = 0; t <= 4; t++)
+                    {
+                        bool on = p.team == t;
+                        if (GUI.Toggle(new Rect(tx + t * 46, y, 42, 34), on, t == 0 ? "—" : t.ToString(), Skin.Button) && !on)
+                        {
+                            Sfx.Play("click");
+                            if (me) socket.Emit("room:team", t);
+                            else socket.Emit("room:team", new { playerId = p.id, team = t });
+                        }
+                    }
+                }
+                else GUI.Label(new Rect(tx, y + 4, 230, 30), TeamName(p.team), Skin.SmallDark);
                 y += 40;
-                if (p.id == myId) { DrawTeamAndColor(x + 24, y, p); y += 44; }
+                if (me) { DrawColorPicker(x + 24, y, p); y += 44; }
             }
-            y = Mathf.Max(y + 10, panel.y + 340);
+            if (isHost)
+            {
+                y += 4;
+                GUI.Label(new Rect(x, y + 8, 150, 26), "Repartir equipos:", Skin.SmallDark);
+                var small = new GUIStyle(Skin.Button) { fontSize = 13 };
+                if (GUI.Button(new Rect(x + 140, y, 120, 34), "2 equipos", small)) socket.Emit("room:autoteams", 2);
+                if (currentRoom.playerList.Count >= 3 && GUI.Button(new Rect(x + 266, y, 120, 34), "3 equipos", small)) socket.Emit("room:autoteams", 3);
+                if (GUI.Button(new Rect(x + 392, y, 160, 34), "Todos contra todos", small)) socket.Emit("room:autoteams", 0);
+                y += 44;
+            }
+            y = Mathf.Max(y + 6, panel.y + 330);
             GUI.enabled = isHost;
-            bool central = GUI.Toggle(new Rect(x, y, cw, 30), currentRoom.central, " Castillo central", Skin.Toggle);
+            bool central = GUI.Toggle(new Rect(x, y, cw, 30), currentRoom.central, " Fortaleza central", Skin.Toggle);
             if (central != currentRoom.central) socket.Emit("room:settings", new { central });
             GUI.enabled = true;
-            GUI.Label(new Rect(x + 22, y + 24, cw - 22, 36), "Se gana dominándolo; sin él solo se gana destruyendo a los rivales", Skin.SmallDark);
-            y += 70;
-            if (isHost && GUI.Button(new Rect(x, y, 200, 44), "Iniciar partida", Skin.Button)) socket.Emit("room:start");
-            if (GUI.Button(new Rect(x + cw - 200, y, 200, 44), "Salir de la sala", Skin.RedButton)) socket.Emit("room:leave");
+            GUI.Label(new Rect(x + 22, y + 24, cw - 22, 36), "Se gana dominándola; sin ella solo se gana destruyendo a los rivales", Skin.SmallDark);
+            y = panel.yMax - 112;
+            if (isHost && GUI.Button(new Rect(x, y, 220, 48), "Iniciar partida", new GUIStyle(Skin.Button) { fontSize = 20 })) { Sfx.Play("click"); socket.Emit("room:start"); }
+            if (GUI.Button(new Rect(x + cw - 200, y, 200, 48), "Salir de la sala", Skin.RedButton)) { Sfx.Play("click"); socket.Emit("room:leave"); }
             var errStyle = new GUIStyle(Skin.LabelDark);
             errStyle.normal.textColor = new Color(0.75f, 0.15f, 0.1f);
-            GUI.Label(new Rect(x, panel.yMax - 44, cw, 30), roomError, errStyle);
+            GUI.Label(new Rect(x, panel.yMax - 54, cw, 30), roomError, errStyle);
         }
 
         static string TeamName(int team) => team == 0 ? "sin equipo" : $"equipo {team}";
 
-        // My team (AoE-style: "—" alone, or 1..4) and my colour; colours others already use are shown
-        // crossed out and can't be picked
-        void DrawTeamAndColor(float x, float y, PlayerInfo me)
+        // My colour; colours other players already use are crossed out and can't be picked
+        void DrawColorPicker(float x, float y, PlayerInfo me)
         {
-            GUI.Label(new Rect(x, y + 6, 70, 26), "Equipo", Skin.SmallDark);
-            for (int t = 0; t <= 4; t++)
-            {
-                bool on = me.team == t;
-                if (GUI.Toggle(new Rect(x + 62 + t * 44, y, 40, 34), on, t == 0 ? "—" : t.ToString(), Skin.Button) && !on) socket.Emit("room:team", t);
-            }
-            float cx = x + 62 + 5 * 44 + 24;
-            GUI.Label(new Rect(cx, y + 6, 60, 26), "Color", Skin.SmallDark);
+            GUI.Label(new Rect(x, y + 6, 60, 26), "Color", Skin.SmallDark);
             for (int i = 0; i < C.Factions.Length; i++)
             {
                 var (id, color) = C.Factions[i];
-                var r = new Rect(cx + 50 + i * 40, y + 2, 32, 30);
+                var r = new Rect(x + 56 + i * 40, y + 2, 32, 30);
                 bool mine = me.faction == id;
                 bool taken = !mine && currentRoom.playerList.Any(o => o.faction == id);
                 Skin.Rect(new Rect(r.x - 3, r.y - 3, r.width + 6, r.height + 6), mine ? new Color(0.24f, 0.16f, 0.08f) : new Color(0, 0, 0, 0));
                 Skin.Rect(r, GameAssets.Hex(color, taken ? 0.3f : 1));
                 if (taken) GUI.Label(r, "×", new GUIStyle(Skin.LabelDark) { alignment = TextAnchor.MiddleCenter });
-                else if (!mine && GUI.Button(r, GUIContent.none, GUIStyle.none)) socket.Emit("room:color", id);
+                else if (!mine && GUI.Button(r, GUIContent.none, GUIStyle.none)) { Sfx.Play("click"); socket.Emit("room:color", id); }
             }
         }
 

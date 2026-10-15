@@ -57,6 +57,16 @@ namespace RTS.Game
             Clamp();
         }
 
+        // Cinematic shots (menu backdrop): look at server px (x, y) from `yaw` at `dist`; `instant` cuts
+        // there, otherwise it eases over like the player's own camera moves
+        public void SetShot(float x, float y, float yawDeg, float dist, bool instant)
+        {
+            focus = new Vector2(x * C.PxToUnit, -y * C.PxToUnit);
+            targetYaw = yawDeg;
+            targetDistance = Mathf.Clamp(dist, MinDistance * 0.7f, MaxDistance);
+            if (instant) { yaw = targetYaw; distance = targetDistance; focusY = Mathf.Max(Ground.WaterLevel, ground.HeightAtTile(focus.x, -focus.y)); }
+        }
+
         public void Zoom(float factor) => targetDistance = Mathf.Clamp(targetDistance / factor, MinDistance, MaxDistance);
         public void Rotate(float degrees) => targetYaw += degrees;
 

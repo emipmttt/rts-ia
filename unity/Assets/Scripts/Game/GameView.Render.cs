@@ -21,12 +21,18 @@ namespace RTS.Game
         static readonly Color HoverColor = new Color(1, 1, 1, 0.9f);
 
         Vector3 camRight, camFwdFlat;
+        int settingsVersion = -1;
 
         void Update()
         {
             float dt = Time.deltaTime;
-            HandleInput(dt);
+            if (!Demo) HandleInput(dt);
             rts.Update(dt);
+            if (settingsVersion != Settings.Version)
+            {
+                settingsVersion = Settings.Version;
+                if (grass != null) grass.gameObject.SetActive(Settings.Grass);
+            }
             var t = rts.cam.transform;
             camRight = t.right;
             camFwdFlat = Vector3.ProjectOnPlane(t.forward, Vector3.up).normalized;
@@ -41,7 +47,7 @@ namespace RTS.Game
             }
 
             UpdateFog(dt);
-            PrepareBuildIcons();
+            if (!Demo) PrepareBuildIcons();
             UpdateAmbience(dt);
             DrawResources(dt);
             DrawArrows(dt);
@@ -891,7 +897,7 @@ namespace RTS.Game
             if (p.z < 0 || p.x < -0.08f || p.y < -0.08f || p.x > 1.08f || p.y > 1.08f) return;
             float d = Mathf.Sqrt((p.x - 0.5f) * (p.x - 0.5f) + (p.y - 0.5f) * (p.y - 0.5f)) / 0.7071f;
             float zoom = Mathf.Clamp01(Mathf.InverseLerp(RtsCamera.MaxDistance + 10, RtsCamera.MinDistance, Vector3.Distance(rts.cam.transform.position, ground.ToWorld(x, y))) + 0.3f);
-            Sfx.Play(name, (1 - d * 0.7f) * zoom);
+            Sfx.Play(name, (1 - d * 0.7f) * zoom * (Demo ? 0.3f : 1));
         }
     }
 }

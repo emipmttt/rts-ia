@@ -37,6 +37,7 @@ const FORMATION_SPACING = 34; // px between soldiers in a marching formation
 // Formation ranks from the front: shields and blades, then riders, then everything that shoots, monks last
 const FORMATION_RANK = { spearman: 0, swordsman: 1, guard: 1, villager: 4, horseman: 2, bowman: 3, archer: 3, monk: 4 };
 const BUILDING_OVERHANG = 1.06;
+const IDLE_SCAN_TICKS = 4; // idle units look for enemies / wounded allies this often
 const MAX_BUFFERED_BYTES = Number(process.env.MAX_BUFFERED_BYTES) || 2 * 1024 * 1024; // a socket with more unsent data than this skips states
 const FRONT = Math.PI / 2; // buildings face +y (south, toward the default camera): their doors are there // the 3D models are a little wider than their footprint
 const BUILDING_CELL = 2; // walkBlocked value of a building's tile (1 = water, tree or mine)
@@ -120,10 +121,21 @@ export class GameRoom {
 
   // Team (0 = alone, 1..MAX_TEAMS) and colour, picked in the waiting room; a colour taken by someone
   // else can't be picked
-  setTeam(playerId, team) {
-    const player = this.players.get(playerId);
+  // Players set their own team; the host can set anyone's
+  setTeam(playerId, team, targetId = playerId) {
+    const player = this.players.get(targetId);
     if (!player || this.status !== RoomStatus.WAITING || !Number.isInteger(team) || team < 0 || team > MAX_TEAMS) return;
+    if (targetId !== playerId && playerId !== this.hostId) return;
     player.team = team;
+    this.broadcastRoom();
+  }
+
+  // Host shortcuts: split everyone into `count` random teams of even size, or clear the teams
+  autoTeams(playerId, count) {
+    if (playerId !== this.hostId || this.status !== RoomStatus.WAITING) return;
+    const list = [...this.players.values()].sort(() => Math.random() - 0.5);
+    const n = Number.isInteger(count) ? clamp(count, 0, MAX_TEAMS) : 2;
+    list.forEach((p, i) => { p.team = n >= 2 ? (i % n) + 1 : 0; });
     this.broadcastRoom();
   }
 
@@ -1499,6 +1511,9 @@ export class GameRoom {
       else if (this.moveToward(e, e.tx, e.ty)) {
         e.formationSpeed = null;
         if (this.nextOrder(e)) continue;
+        // Idle units look around every few ticks (staggered), not every tick: in a big battle this
+        // scan over every entity was the costliest part of the tick
+        if ((this.tickCount + e.id) % IDLE_SCAN_TICKS !== 0) continue;
         if (ENTITY_STATS[e.type].heal) this.autoHeal(e);
         else this.autoAcquire(e);
       }

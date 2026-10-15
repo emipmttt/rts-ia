@@ -101,6 +101,19 @@ namespace RTS.Game
             return g;
         }
 
+        // The main menu's backdrop: the same world, fed by a local scripted battle (UI.MenuBackdrop)
+        // instead of the server; no HUD, no input, quieter sounds, everything revealed
+        public bool Demo { get; private set; }
+        public RtsCamera Camera => rts;
+        public static GameView CreateDemo(JToken start, Camera cam)
+        {
+            var go = new GameObject("MenuBackdrop");
+            var g = go.AddComponent<GameView>();
+            g.Demo = true;
+            g.Init(null, "menu-viewer", start, cam);
+            return g;
+        }
+
         void Init(SocketIO socket, string myId, JToken start, Camera cam)
         {
             this.socket = socket;
@@ -297,8 +310,11 @@ namespace RTS.Game
 
         // ---------- State ----------
 
+        int stateCount;
+
         public void ApplyState(JToken state)
         {
+            stateCount++;
             ApplySheep(Parse.Sheep(state["sheep"]));
             var newPlayers = new Dictionary<string, PlayerInfo>();
             foreach (var p in (JArray)state["players"])
