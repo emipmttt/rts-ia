@@ -11,7 +11,8 @@ namespace RTS.Game
 {
     public partial class GameView
     {
-        const float AgeAnimTime = 1.1f;
+        const float AgeAnimTime = 3.4f;   // the rise and settle of each building in its new age
+        const float AgeWaveTime = 2.2f;   // farthest buildings start this much after those by the town center
         const float WallPostWidth = 0.8f, WallSpanScale = 2f;
         const float GateOverlap = 0.3f; // spans toward a gate run this far into its pillar so they meet
         static readonly (int dx, int dy)[] Around = { (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1) };
@@ -20,6 +21,9 @@ namespace RTS.Game
         readonly Dictionary<string, float> agedAt = new Dictionary<string, float>(); // when each player last advanced
         float ageBannerAt = -10;
         int ageBannerAge;
+
+        // A shooting building's reach in its owner's age (the neutral central fortress stays at the first)
+        float RangeOf(RTS.Net.EntityState e) => Defs.BuildingRange(e.type, e.owner == null ? 1 : AgeOf(e.owner));
 
         int AgeOf(string owner) => owner != null && players.TryGetValue(owner, out var p) ? p.age : 2;
         static string AgeSuffix(int age) => age == 1 ? "_a1" : age == 3 ? "_a3" : "";
@@ -51,32 +55,68 @@ namespace RTS.Game
             rts.Shake = Mathf.Max(rts.Shake, 0.25f);
         }
 
-        // A building just rebuilt in its owner's new age grows out with a puff of dust and sparkles
+        // A building just rebuilt in its owner's new age waits flat on the ground for the wave that
+        // spreads out from the closest town center, then rises out of a puff of dust and sparkles
         void StartAgeAnim(EntityView s)
         {
             if (!s.s.owner.HasValue() || !agedAt.TryGetValue(s.s.owner, out var at) || Time.time - at > 6) return;
-            s.ageAnimAt = Time.time;
-            var pos = s.root.transform.position;
-            float size = Defs.BuildingSize(s.s.type) * C.PxToUnit;
-            SpawnFx("dust2", pos + Vector3.up * 0.2f, size * 0.8f);
-            Burst(pos + Vector3.up * 0.4f, 24 + (int)(size * 6), new[] { 0xfff3b0, 0xffd34d, 0xffffff, ColorOf(s.s.owner) }, 90 + size * 25, 160, 0.9f, 140);
-            SfxAt("ageup", s.s.x, s.s.y);
+            float nearest = float.MaxValue;
+            foreach (var o in sprites.Values)
+                if (o.s.owner == s.s.owner && o.s.type == "townCenter" && !o.s.central)
+                    nearest = Mathf.Min(nearest, Vector2.Distance(new Vector2(o.s.x, o.s.y), new Vector2(s.s.x, s.s.y)));
+            float delay = nearest == float.MaxValue ? 0 : Mathf.Clamp01(nearest / (C.TileSize * 40)) * AgeWaveTime;
+            s.ageAnimAt = at + delay;
+            s.ageFxDone = false;
         }
 
-        // Scale of a building's model during its age animation: squashed low, then springing up
-        float AgeAnimScale(EntityView s)
+        // Each frame of the age animation: the puff and the sound when the rise begins, then golden
+        // sparkles drifting up around the building while it grows
+        void UpdateAgeAnim(EntityView s)
         {
-            float t = (Time.time - s.ageAnimAt) / AgeAnimTime;
-            if (t < 0 || t >= 1) return 1;
-            return 1 - Mathf.Exp(-6 * t) * Mathf.Cos(t * 11) * 0.45f;
+            float t = Time.time - s.ageAnimAt;
+            if (t < 0 || t > AgeAnimTime) return;
+            var pos = s.root.transform.position;
+            float size = Defs.BuildingSize(s.s.type) * C.PxToUnit;
+            bool small = s.stats.wall || s.stats.gate;
+            var colors = new[] { 0xfff3b0, 0xffd34d, 0xffffff, ColorOf(s.s.owner) };
+            if (!s.ageFxDone)
+            {
+                s.ageFxDone = true;
+                SpawnFx("dust2", pos + Vector3.up * 0.2f, size * 0.9f);
+                Burst(pos + Vector3.up * 0.4f, (small ? 6 : 30) + (int)(size * 6), colors, 70 + size * 22, 150, 1.4f, 90);
+                if (!small) SfxAt("ageup", s.s.x, s.s.y);
+            }
+            if (!InSight(pos) || Random.value > (small ? 0.15f : 0.8f) * (1 - t / AgeAnimTime)) return;
+            var at = pos + new Vector3((Random.value - 0.5f) * size, Random.value * size * 0.6f, (Random.value - 0.5f) * size);
+            AddBit(at, new Vector3(0, 0.8f + Random.value * 0.8f, 0), 1.2f + Random.value * 0.6f, null, colors[Random.Range(0, colors.Length)], -20);
+        }
+
+        // (width, height) factors of a building's model during its age animation: flat while it
+        // waits for the wave, then rising with an overshoot and a slow wobble as it settles
+        Vector2 AgeAnimScale(EntityView s)
+        {
+            float t = Time.time - s.ageAnimAt;
+            if (t >= AgeAnimTime) return Vector2.one;
+            if (t < 0) return new Vector2(0.9f, 0.04f);
+            const float Rise = 1.3f;
+            if (t < Rise)
+            {
+                float p = t / Rise;
+                const float c1 = 1.4f, c3 = c1 + 1;
+                float back = 1 + c3 * Mathf.Pow(p - 1, 3) + c1 * Mathf.Pow(p - 1, 2); // ease-out-back
+                return new Vector2(0.9f + 0.1f * p, Mathf.Max(0.04f, back));
+            }
+            float q = (t - Rise) / (AgeAnimTime - Rise);
+            float wobble = Mathf.Sin(q * Mathf.PI * 5) * 0.05f * (1 - q);
+            return new Vector2(1 - wobble * 0.5f, 1 + wobble);
         }
 
         // Big ribbon in the middle of the screen when we advance
         void DrawAgeBanner(float W, float H)
         {
             float t = Time.time - ageBannerAt;
-            if (t > 4 || ageBannerAge < 1) return;
-            float pop = Mathf.Clamp01(t / 0.35f), fade = Mathf.Clamp01((4 - t) / 0.6f);
+            if (t > 5.5f || ageBannerAge < 1) return;
+            float pop = Mathf.Clamp01(t / 0.5f), fade = Mathf.Clamp01((5.5f - t) / 0.8f);
             float k = Mathf.SmoothStep(0.6f, 1, pop);
             var old = GUI.color;
             GUI.color = new Color(1, 1, 1, fade);

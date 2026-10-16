@@ -24,7 +24,7 @@ namespace RTS.Game
             ["spearman"] = ("spearman", 2.2f, true),
             ["horseman"] = ("flyer", 2.2f, true),
             ["monk"] = ("monk", 2.2f, true),
-            ["guard"] = ("lancer", 0.3f, false),
+            ["guard"] = ("spearman", 2.6f, true), // the central fortress's knights: big neutral spearmen
         };
         static readonly string[] HairStyles = { "male", "female" };
         static readonly HashSet<string> Soldiers = new HashSet<string> { "spearman", "swordsman", "archer", "bowman", "horseman" };
@@ -82,7 +82,7 @@ namespace RTS.Game
         int mapTiles;
         Ground ground;
         RtsCamera rts;
-        PixelBatch pixels, overlay;
+        PixelBatch pixels, overlay, ordersBatch;
         TerritoryMap territory;
         GrassField grass;
         Transform worldRoot, objectsRoot;
@@ -129,13 +129,16 @@ namespace RTS.Game
             mapTiles = Mathf.RoundToInt(Mathf.Sqrt(tiles.Length));
 
             worldRoot = transform;
-            ground = Ground.Build(worldRoot, tiles);
+            bool spirit = (string)start["map"]["theme"] == "spirit";
+            ground = Ground.Build(worldRoot, tiles, spirit);
+            Atmosphere.Set(spirit);
             objectsRoot = new GameObject("Objects").transform;
             objectsRoot.SetParent(worldRoot, false);
             rts = new RtsCamera(cam, ground);
             pixels = PixelBatch.Create("Pixels", worldRoot, Materials.Pixels, ground, cam);
             overlay = PixelBatch.Create("Overlay", worldRoot, Materials.Overlay, ground, cam);
-            territory = new TerritoryMap(tiles, mapTiles);
+            ordersBatch = PixelBatch.Create("Orders", worldRoot, Materials.OverlayTop, ground, cam);
+            territory = new TerritoryMap(tiles, mapTiles, spirit);
             fog = new FogOfWar(mapTiles);
             Materials.ApplyOutlines();
 
@@ -238,9 +241,11 @@ namespace RTS.Game
             else if (r.type == "wood")
             {
                 // Pixel-art pine or oak, one tile wide, mirrored on some; about 1 in 8 autumn orange
+                // (the other way round in the spirit dimension: mostly orange, a few green)
                 float roll = Hash01(r.id * 3.7f);
                 int greens = GameAssets.TreeTintCount - GameAssets.AutumnTints;
-                int tint = roll < 0.12f ? greens + Mathf.FloorToInt(roll / 0.12f * GameAssets.AutumnTints) : Mathf.FloorToInt((roll - 0.12f) / 0.88f * greens);
+                float autumn = ground != null && ground.Spirit ? 0.85f : 0.12f;
+                int tint = roll < autumn ? greens + Mathf.FloorToInt(roll / autumn * GameAssets.AutumnTints) : Mathf.FloorToInt((roll - autumn) / (1 - autumn) * greens);
                 v.sprite.sprite = GameAssets.Tree(r.id % 2, Mathf.Clamp(tint, 0, GameAssets.TreeTintCount - 1));
                 mirrored = (r.id / 2) % 2 == 1;
                 scale = C.TileSize / 16f;
@@ -312,16 +317,17 @@ namespace RTS.Game
 
         int stateCount;
 
-        public void ApplyState(JToken state)
+        public void ApplyState(JToken state) => ApplyState(StateMsg.From(state));
+
+        readonly HashSet<int> seenIds = new HashSet<int>();
+        readonly List<int> goneIds = new List<int>();
+
+        public void ApplyState(StateMsg state)
         {
             stateCount++;
-            ApplySheep(Parse.Sheep(state["sheep"]));
+            ApplySheep(state.sheep);
             var newPlayers = new Dictionary<string, PlayerInfo>();
-            foreach (var p in (JArray)state["players"])
-            {
-                var info = PlayerInfo.Parse(p);
-                newPlayers[info.id] = info;
-            }
+            foreach (var info in state.players) newPlayers[info.id] = info;
             players = newPlayers;
             if (players.TryGetValue(myId, out var me))
             {
@@ -330,10 +336,10 @@ namespace RTS.Game
                 popCap = me.popCap;
             }
 
-            var seen = new HashSet<int>();
-            foreach (var t in (JArray)state["entities"])
+            var seen = seenIds;
+            seen.Clear();
+            foreach (var e in state.entities)
             {
-                var e = EntityState.Parse(t);
                 seen.Add(e.id);
                 if (!sprites.TryGetValue(e.id, out var s))
                 {
@@ -354,7 +360,9 @@ namespace RTS.Game
                 s.s = e;
             }
             stateSeen = true;
-            foreach (var id in sprites.Keys.Where(id => !seen.Contains(id)).ToList())
+            goneIds.Clear();
+            foreach (var id in sprites.Keys) if (!seen.Contains(id)) goneIds.Add(id);
+            foreach (var id in goneIds)
             {
                 var s = sprites[id];
                 if (s.gone) continue;
@@ -578,7 +586,6 @@ namespace RTS.Game
         {
             var art = UnitArt[v.s.type];
             var faction = FactionOf(v.s.owner);
-            if (!art.rig) return GameAssets.Lancer(faction, anim == "attack" ? "attack" : anim == "run" ? "run" : "idle");
             var civ = EntityCiv(v);
             var rig = civ != null && civ != "air" && GameAssets.HasRig($"{art.sheet}_{civ}") ? $"{art.sheet}_{civ}" : art.sheet;
             if (!GameAssets.RigHasAnim(rig, anim)) anim = "idle";
@@ -596,9 +603,17 @@ namespace RTS.Game
 
         void OnDestroy()
         {
-            FogOfWar.Disable();
+            // The menu backdrop is destroyed at the end of the frame the game starts in, after the
+            // game's view set up its fog: only the view that owns the global fog switches it (and the
+            // ambience) off, or the game would run with the whole map uncovered
+            bool current = fog == null || Shader.GetGlobalTexture("_FogOfWarTex") == fog.Texture;
+            if (current)
+            {
+                FogOfWar.Disable();
+                Sfx.StopAmbient();
+                Atmosphere.Set(false);
+            }
             if (fog != null) Destroy(fog.Texture);
-            Sfx.StopAmbient();
         }
     }
 }

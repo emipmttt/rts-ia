@@ -17,7 +17,8 @@ namespace RTS
         static readonly Dictionary<string, Sprite> singles = new Dictionary<string, Sprite>();
         static JObject rigIndex;
 
-        public static readonly string[] Buildings = { "castle", "barracks", "archery", "monastery", "tower", "house1", "house2", "house3" };
+        // Building sprites painted by unity/Tools/gen-art.py (placement preview, fallback while a model loads)
+        public static readonly string[] Buildings = { "castle", "barracks", "monastery", "tower", "house1", "house2", "house3" };
 
         // Foliage variants (TREE_TINTS); the last AutumnTints are autumn orange
         static readonly (float h, float s, float l)[] TreeTints =
@@ -110,9 +111,6 @@ namespace RTS
             return false;
         }
 
-        // Tiny Swords lancer (central guards): 320 px frames
-        public static Sprite[] Lancer(string faction, string anim) => Strip($"{faction}/lancer_{anim}", 320, new Vector2(0.5f, 0.32f));
-
         public static Sprite Building(string faction, string name) => Single($"{faction}/{name}", new Vector2(0.5f, 0.04f));
 
         // ---- Resources ----
@@ -128,13 +126,10 @@ namespace RTS
             return s;
         }
 
-        public static Sprite[] Bush(int i) => Strip($"terrain/bush{i + 1}", 128, new Vector2(0.5f, 0.2f));
         // 16 px bush drawn twice in a cross (see AddResource)
         public static Sprite BushCross => Single("terrain/bush_cross", new Vector2(0.5f, 0));
         public static Sprite Gold(int i) => Single($"terrain/gold{i + 1}", new Vector2(0.5f, 0.25f));
         public static Sprite Stone(int i) => Single($"terrain/stone{i + 1}", new Vector2(0.5f, 0.2f));
-        public static Sprite[] SheepIdle => Strip("terrain/sheep_idle", 128, new Vector2(0.5f, 0.2f));
-        public static Sprite[] SheepGrass => Strip("terrain/sheep_grass", 128, new Vector2(0.5f, 0.2f));
 
         // Sheep sheet baked by unity/Tools/bake-sheep.py: rows idle, graze, walk, dead of 20x16 frames
         static readonly string[] SheepRows = { "idle", "graze", "walk", "dead" };
@@ -223,11 +218,125 @@ namespace RTS
             }
         }
 
+        // ---- Spirit dimension ----
+        // The same ground art recoloured: crimson grass, cold grey rock, a dark teal bed under the
+        // shallow water, which is a pale jade; plus the waterfall and the white mist of the void
+
+        static Texture2D Recolor(Texture2D src, string name, System.Func<Color32, Color32> f)
+        {
+            var px = src.GetPixels32();
+            for (int i = 0; i < px.Length; i++) if (px[i].a > 0) px[i] = f(px[i]);
+            var t = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = src.wrapMode, name = name };
+            t.SetPixels32(px);
+            t.Apply();
+            return t;
+        }
+
+        static float Lum(Color32 c) => (c.r * 0.3f + c.g * 0.59f + c.b * 0.11f) / 255f;
+        static byte B(float v) => (byte)Mathf.Clamp(Mathf.RoundToInt(v * 255), 0, 255);
+
+        // Light and shade of the grass kept, its colour turned to a deep red
+        static Color32 Crimson(Color32 c)
+        {
+            float l = Lum(c);
+            return new Color32(B(0.25f + l * 0.95f), B(0.05f + l * 0.32f), B(0.09f + l * 0.33f), c.a);
+        }
+
+        static Texture2D spiritGrass, spiritTuft, spiritRock, spiritBed, spiritMist;
+        static Texture2D[] spiritWater, waterfall;
+        public static Texture2D SpiritGrass => spiritGrass ??= Recolor(Grass, "Spirit grass", Crimson);
+        public static Texture2D SpiritGrassTuft => spiritTuft ??= Recolor(GrassTuft, "Spirit tuft", Crimson);
+        public static Texture2D SpiritRock => spiritRock ??= Recolor(Cliff, "Spirit rock", c =>
+        {
+            float l = Lum(c) * 0.9f + 0.08f;
+            return new Color32(B(l), B(l * 1.01f), B(l * 1.06f), c.a);
+        });
+        public static Texture2D SpiritShallowBed => spiritBed ??= Recolor(Sand, "Spirit bed", c =>
+        {
+            float l = Lum(c);
+            return new Color32(B(l * 0.24f), B(l * 0.52f), B(l * 0.44f), c.a);
+        });
+        public static Texture2D[] SpiritWater
+        {
+            get
+            {
+                if (spiritWater != null) return spiritWater;
+                spiritWater = new Texture2D[Water.Length];
+                for (int i = 0; i < Water.Length; i++)
+                    spiritWater[i] = Recolor(Water[i], "Spirit water", c =>
+                    {
+                        float l = Lum(c);
+                        // Jade green-blue
+                        return new Color32(B(0.22f + l * 0.45f), B(0.58f + l * 0.4f), B(0.5f + l * 0.38f), c.a);
+                    });
+                return spiritWater;
+            }
+        }
+
+        // The waterfall: the game's own water tile in the spirit colour, in 8 frames that slide it down
+        // 2 px each (the waterfall mesh's v grows with depth, so moving the pattern to higher rows
+        // makes it fall)
+        public static Texture2D[] Waterfall
+        {
+            get
+            {
+                if (waterfall != null) return waterfall;
+                const int F = 8, Step = 2;
+                var src = SpiritWater[0];
+                int w = src.width, h = src.height;
+                var basePx = src.GetPixels32();
+                waterfall = new Texture2D[F];
+                for (int f = 0; f < F; f++)
+                {
+                    var px = new Color32[w * h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        int from = ((y - f * Step) % h + h) % h;
+                        System.Array.Copy(basePx, from * w, px, y * w, w);
+                    }
+                    var t = new Texture2D(w, h, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Repeat, name = "Waterfall" };
+                    t.SetPixels32(px);
+                    t.Apply();
+                    waterfall[f] = t;
+                }
+                return waterfall;
+            }
+        }
+
+        // Soft pixel clouds on transparency, tiling every 32 px
+        public static Texture2D SpiritMist
+        {
+            get
+            {
+                if (spiritMist != null) return spiritMist;
+                const int S = 32;
+                var px = new Color32[S * S];
+                for (int y = 0; y < S; y++)
+                    for (int x = 0; x < S; x++)
+                    {
+                        float a = 0;
+                        // A few blobs, wrapped so the tile repeats seamlessly
+                        foreach (var (cx, cy, r) in new[] { (6f, 8f, 7f), (20f, 5f, 6f), (14f, 20f, 9f), (28f, 24f, 6f), (3f, 27f, 5f) })
+                        {
+                            float dx = Mathf.Abs(x + 0.5f - cx), dy = Mathf.Abs(y + 0.5f - cy);
+                            dx = Mathf.Min(dx, S - dx); dy = Mathf.Min(dy, S - dy);
+                            a = Mathf.Max(a, 1 - Mathf.Sqrt(dx * dx + dy * dy) / r);
+                        }
+                        a = Mathf.Floor(Mathf.Clamp01(a) * 4) / 4; // banded like pixel art
+                        px[y * S + x] = new Color32(250, 251, 255, B(a * 0.9f));
+                    }
+                spiritMist = new Texture2D(S, S, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Repeat, name = "Spirit mist" };
+                spiritMist.SetPixels32(px);
+                spiritMist.Apply();
+                return spiritMist;
+            }
+        }
+
         // ---- UI ----
         public static Texture2D UI(string name) => name == "stone" ? StoneIcon : Asset("ui/" + name);
 
         static Texture2D stoneIcon;
-        // A grey pixel-art rock for the stone resource (the UI set has no stone icon)
+        // A grey pixel-art rock for the stone resource, drawn here like the icons of unity/Tools/gen-art.py
         static Texture2D StoneIcon
         {
             get

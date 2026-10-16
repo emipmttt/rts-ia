@@ -6,7 +6,8 @@ namespace RTS
 {
     public static class Materials
     {
-        // The "outlines" setting: team-coloured outlines around units and buildings
+        // The "outlines" setting: team-coloured outlines around units and buildings, drawn on screen
+        // around their visible silhouette (Core/Outlines.cs)
         public static bool Outlines
         {
             get => PlayerPrefs.GetInt("outlines", 0) == 1;
@@ -18,7 +19,7 @@ namespace RTS
         static readonly Dictionary<(Texture2D, Texture2D, bool), Material> models = new Dictionary<(Texture2D, Texture2D, bool), Material>();
         static readonly Dictionary<(Texture2D, bool), Material> ghosts = new Dictionary<(Texture2D, bool), Material>();
         static readonly Dictionary<Color, Material> units = new Dictionary<Color, Material>();
-        static Material spriteLit, spriteGlow, ghost, pixels, overlay;
+        static Material spriteLit, spriteGlow, ghost, pixels, overlay, overlayTop;
 
         // Lit flat colour (bridges, logs, flag poles)
         public static Material Lit(Color color)
@@ -118,6 +119,22 @@ namespace RTS
                 overlay.SetFloat("_FogOfWar", 0);
                 overlay.renderQueue = 3100;
                 return overlay;
+            }
+        }
+
+        // Like Overlay, but drawn over everything (grass, trees, buildings) and through the black of
+        // unexplored land: the trail of a selected unit's queued orders
+        public static Material OverlayTop
+        {
+            get
+            {
+                if (overlayTop != null) return overlayTop;
+                overlayTop = new Material(Shader.Find("RTS/Unlit")) { name = "OverlayTop" };
+                overlayTop.SetTexture("_MainTex", GameAssets.White);
+                overlayTop.SetFloat("_ZTest", (float)UnityEngine.Rendering.CompareFunction.Always);
+                overlayTop.SetFloat("_FogOfWar", 0);
+                overlayTop.renderQueue = 3150;
+                return overlayTop;
             }
         }
     }

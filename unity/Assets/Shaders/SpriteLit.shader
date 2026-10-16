@@ -78,20 +78,7 @@ Shader "RTS/SpriteLit"
                 half frost = step(0.93, i.color.a) * step(i.color.a, 0.985);
                 half lum = dot(tex.rgb, half3(0.3, 0.59, 0.11));
                 tex.rgb = lerp(tex.rgb, lerp(half3(0.72, 0.86, 1.0), half3(1, 1, 1), saturate(lum * 1.4)), frost * 0.85);
-                if (tex.a < _Cutoff)
-                {
-                    // Outline: an empty pixel touching the figure takes the owner's colour
-                    if (_OutlinesOn > 0.5 && _OutlineColor.a > 0)
-                    {
-                        float2 size;
-                        _MainTex.GetDimensions(size.x, size.y);
-                        float2 t = 1.0 / size;
-                        half n = max(max(SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(t.x, 0)).a, SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - float2(t.x, 0)).a),
-                                     max(SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv + float2(0, t.y)).a, SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv - float2(0, t.y)).a));
-                        if (n * i.color.a >= _Cutoff) return half4(ApplyFogOfWar(MixFog(_OutlineColor.rgb, i.fog), i.positionWS), 1);
-                    }
-                    discard;
-                }
+                if (tex.a < _Cutoff) discard;
                 float3 toCam = normalize(GetCameraPositionWS() - i.positionWS);
                 float3 n = normalize(float3(toCam.x, 0, toCam.z) * 0.6 + float3(0, 1, 0));
 
@@ -118,6 +105,39 @@ Shader "RTS/SpriteLit"
                 half3 col = tex.rgb * light + tex.rgb * _Emission;
                 col = MixFog(col, i.fog);
                 return half4(ApplyFogOfWar(col, i.positionWS), 1);
+            }
+            ENDHLSL
+        }
+
+        // Outline mask (Core/Outlines.cs): the figure in its owner's colour where it is visible;
+        // nothing unless outlines are on and the material has an outline colour
+        Pass
+        {
+            Name "OutlineMask"
+            Tags { "LightMode"="OutlineMask" }
+            ZWrite Off ZTest LEqual
+            Offset -1, -1
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_fog
+            #include "FogOfWar.hlsl"
+            struct Attributes { float4 positionOS : POSITION; float2 uv : TEXCOORD0; half4 color : COLOR; };
+            struct Varyings { float4 positionCS : SV_POSITION; float2 uv : TEXCOORD0; half alpha : TEXCOORD1; float3 positionWS : TEXCOORD2; half fog : TEXCOORD3; };
+            Varyings vert (Attributes v)
+            {
+                Varyings o;
+                o.positionWS = TransformObjectToWorld(v.positionOS.xyz);
+                o.positionCS = _OutlinesOn > 0.5 && _OutlineColor.a > 0 ? TransformWorldToHClip(o.positionWS) : float4(0, 0, 0, 1);
+                o.uv = v.uv;
+                o.alpha = v.color.a * _Color.a;
+                o.fog = ComputeFogFactor(o.positionCS.z);
+                return o;
+            }
+            half4 frag (Varyings i) : SV_Target
+            {
+                clip(SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv).a * i.alpha - _Cutoff);
+                return half4(ApplyFogOfWar(MixFog(_OutlineColor.rgb, i.fog), i.positionWS), 1);
             }
             ENDHLSL
         }

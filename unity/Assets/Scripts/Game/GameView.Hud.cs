@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using RTS.UI;
+using RTS.Net;
 
 // In-game UI: resource bar, ranking, build menu, idle-villager button, territory minimap,
 // tooltip, messages, the selection box and the bars over units and buildings.
@@ -180,15 +181,22 @@ namespace RTS.Game
         // ---------- Menu (Esc) ----------
 
         const float MenuButtonSize = 40;
-        bool menuOpen, confirmLeave, optionsOpen;
-        Vector2 optionsScroll;
-        float optionsHeight = 600;
+        enum MenuPage { Summary, Options, Controls }
+        bool menuOpen, confirmLeave;
+        MenuPage menuPage;
+        Vector2 menuScroll;
+        float menuContentHeight = 600;
+        static readonly Color Ink = new Color(0.24f, 0.16f, 0.08f);
+        static readonly Color InkLine = new Color(0.24f, 0.16f, 0.08f, 0.22f);
+        static readonly Color InkRow = new Color(0.24f, 0.16f, 0.08f, 0.07f);
+        static readonly Color MineRow = new Color(1f, 0.8f, 0.3f, 0.3f);
 
         void ToggleMenu()
         {
             menuOpen = !menuOpen;
             confirmLeave = false;
-            optionsOpen = false;
+            menuPage = MenuPage.Summary;
+            menuScroll = Vector2.zero;
             Sfx.Play("click");
         }
 
@@ -201,75 +209,339 @@ namespace RTS.Game
             for (int i = 0; i < 3; i++) Skin.Rect(new Rect(r.x + 11, r.y + 10 + i * 7, r.width - 22, 3), Color.white);
         }
 
-        // The game keeps running (it is multiplayer); leaving removes the player and their village
+        // One sheet: a header, the navigation down the left (continue, pages, sound, leave at the
+        // bottom) and the open page on the right, scrolling when it doesn't fit. The game keeps running
+        // (it is multiplayer); leaving removes the player and their village.
         void DrawMenu(float W, float H)
         {
+            MenuStyles();
             Block(new Rect(0, 0, W, H));
-            Skin.Rect(new Rect(0, 0, W, H), new Color(0, 0, 0, 0.45f));
-            if (optionsOpen)
-            {
-                float ow = 600, oh = Mathf.Min(H - 40, 690);
-                var op = new Rect((W - ow) / 2, (H - oh) / 2, ow, oh);
-                GUI.Box(op, GUIContent.none, Skin.Paper);
-                GUI.Label(new Rect(op.x + 30, op.y + 18, 300, 30), "Opciones", new GUIStyle(Skin.TitleDark) { fontSize = 24, alignment = TextAnchor.MiddleLeft });
-                if (GUI.Button(new Rect(op.xMax - 130, op.y + 16, 110, 36), "← Volver", Skin.Button)) { Sfx.Play("click"); optionsOpen = false; }
-                optionsScroll = GUI.BeginScrollView(new Rect(op.x + 30, op.y + 64, ow - 50, oh - 84), optionsScroll, new Rect(0, 0, ow - 80, optionsHeight));
-                optionsHeight = RTS.UI.OptionsPanel.Draw(new Rect(0, 0, ow - 80, 2000));
-                GUI.EndScrollView();
-                return;
-            }
-            float w = 340, h = confirmLeave ? 230 : 322;
-            var panel = new Rect((W - w) / 2, (H - h) / 2, w, h);
+            Skin.Rect(new Rect(0, 0, W, H), new Color(0, 0, 0, 0.55f));
+            float w = Mathf.Min(W - 32, 900), h = Mathf.Min(H - 32, 620);
+            var panel = new Rect(Mathf.Round((W - w) / 2), Mathf.Round((H - h) / 2), w, h);
             GUI.Box(panel, GUIContent.none, Skin.Paper);
-            float bx = panel.x + 40, bw = w - 80, y = panel.y + 28;
-            if (confirmLeave)
+            const float Pad = 34, Header = 62, Gap = 28, BH = 46, BG = 10;
+            var inner = new Rect(panel.x + Pad, panel.y + Pad - 8, w - Pad * 2, h - Pad * 2 + 8);
+
+            GUI.Label(new Rect(inner.x, inner.y, inner.width, 36), "Menú de la partida", menuTitle);
+            GUI.Label(new Rect(inner.x, inner.y, inner.width, 36), "La partida sigue en marcha  ·  Esc para volver", menuHint);
+            Skin.Rect(new Rect(inner.x, inner.y + 46, inner.width, 2), InkLine);
+
+            var body = new Rect(inner.x, inner.y + Header, inner.width, inner.height - Header);
+            float navW = Mathf.Clamp(body.width * 0.27f, 170, 230);
+            var nav = new Rect(body.x, body.y, navW, body.height);
+            var content = new Rect(nav.xMax + Gap, body.y, body.width - navW - Gap, body.height);
+            Skin.Rect(new Rect(nav.xMax + Gap / 2 - 1, body.y, 2, body.height), InkLine);
+
+            float y = nav.y;
+            if (GUI.Button(new Rect(nav.x, y, navW, BH), "Continuar", Skin.Button)) ToggleMenu();
+            y += BH + BG * 2;
+            void Tab(string label, MenuPage page)
             {
-                GUI.Label(new Rect(bx, y, bw, 30), "¿Salir de la partida?", new GUIStyle(Skin.TitleDark) { fontSize = 22 });
-                GUI.Label(new Rect(bx, y + 38, bw, 50), "Tu aldea desaparecerá y no podrás volver a esta partida.", new GUIStyle(Skin.SmallDark) { alignment = TextAnchor.UpperCenter });
-                if (GUI.Button(new Rect(bx, y + 96, bw, 44), "Sí, salir", Skin.RedButton))
+                bool on = !confirmLeave && menuPage == page;
+                if (GUI.Toggle(new Rect(nav.x, y, navW, BH), on, label, Skin.Button) != on && !on)
                 {
                     Sfx.Play("click");
-                    socket.Emit("room:leave");
+                    menuPage = page;
+                    confirmLeave = false;
+                    menuScroll = Vector2.zero;
                 }
-                if (GUI.Button(new Rect(bx, y + 146, bw, 40), "Cancelar", Skin.Button)) { Sfx.Play("click"); confirmLeave = false; }
-                return;
+                y += BH + BG;
             }
-            GUI.Label(new Rect(bx, y, bw, 30), "Menú", new GUIStyle(Skin.TitleDark) { fontSize = 24 });
-            y += 46;
-            if (GUI.Button(new Rect(bx, y, bw, 44), "Continuar", Skin.Button)) ToggleMenu();
-            y += 52;
-            if (GUI.Button(new Rect(bx, y, bw, 44), "Opciones", Skin.Button)) { Sfx.Play("click"); optionsOpen = true; }
-            y += 52;
-            if (GUI.Button(new Rect(bx, y, bw, 44), Sfx.Muted ? "Activar sonido (M)" : "Silenciar (M)", Skin.Button))
+            Tab("Resumen", MenuPage.Summary);
+            Tab("Opciones", MenuPage.Options);
+            Tab("Controles", MenuPage.Controls);
+            float bottom = nav.yMax - BH;
+            if (GUI.Button(new Rect(nav.x, bottom, navW, BH), "Salir de la partida", Skin.RedButton)) { Sfx.Play("click"); confirmLeave = true; }
+            if (GUI.Button(new Rect(nav.x, bottom - BH - BG, navW, BH), Sfx.Muted ? "Activar sonido  (M)" : "Silenciar  (M)", Skin.Button))
             {
                 Sfx.Muted = !Sfx.Muted;
                 Sfx.Play("click");
             }
-            y += 52;
-            if (GUI.Button(new Rect(bx, y, bw, 44), "Salir de la partida", Skin.RedButton)) { Sfx.Play("click"); confirmLeave = true; }
+
+            if (confirmLeave)
+            {
+                DrawLeaveConfirm(content);
+                return;
+            }
+            string title = menuPage == MenuPage.Options ? "Opciones" : menuPage == MenuPage.Controls ? "Controles" : "Resumen";
+            GUI.Label(new Rect(content.x, content.y - 4, content.width, 30), title, pageTitle);
+            var view = new Rect(content.x, content.y + 36, content.width, content.height - 36);
+            bool scrolls = menuContentHeight > view.height;
+            float cw = view.width - (scrolls ? 20 : 0);
+            menuScroll = GUI.BeginScrollView(view, menuScroll, new Rect(0, 0, cw, Mathf.Max(menuContentHeight, view.height - 1)));
+            var area = new Rect(0, 0, cw, 4000);
+            menuContentHeight = menuPage == MenuPage.Options ? RTS.UI.OptionsPanel.Draw(area)
+                : menuPage == MenuPage.Controls ? DrawControls(area)
+                : DrawSummary(area);
+            GUI.EndScrollView();
         }
 
-        // Every player by points, leader first; defeated crossed out, disconnected marked
+        void DrawLeaveConfirm(Rect r)
+        {
+            float w = Mathf.Min(r.width, 420), x = r.x + (r.width - w) / 2, y = r.y + Mathf.Max(0, (r.height - 230) / 2);
+            GUI.Label(new Rect(x, y, w, 34), "¿Salir de la partida?", new GUIStyle(Skin.TitleDark) { fontSize = 22 });
+            GUI.Label(new Rect(x, y + 42, w, 50), "Tu aldea desaparecerá y no podrás volver a esta partida.", bodyDark);
+            float bw = (w - 12) / 2;
+            if (GUI.Button(new Rect(x, y + 110, bw, 46), "Cancelar", Skin.Button)) { Sfx.Play("click"); confirmLeave = false; }
+            if (GUI.Button(new Rect(x + bw + 12, y + 110, bw, 46), "Sí, salir", Skin.RedButton))
+            {
+                Sfx.Play("click");
+                socket.Emit("room:leave");
+            }
+        }
+
+        // Single-line copies of the skin's styles, made once; colour and weight reset on every call
+        // so a caller tinting one row doesn't leak into the next
+        static readonly Dictionary<(GUIStyle, TextAnchor), GUIStyle> noWrap = new Dictionary<(GUIStyle, TextAnchor), GUIStyle>();
+        static GUIStyle NoWrap(GUIStyle s, TextAnchor align = TextAnchor.MiddleLeft)
+        {
+            if (!noWrap.TryGetValue((s, align), out var n))
+                noWrap[(s, align)] = n = new GUIStyle(s) { wordWrap = false, clipping = TextClipping.Clip, alignment = align };
+            n.normal.textColor = s.normal.textColor;
+            n.fontStyle = s.fontStyle;
+            return n;
+        }
+
+        static GUIStyle menuTitle, menuHint, pageTitle, sectionTitle, bodyDark, nameDark, plainDark, bigNumber, keyHint;
+        static void MenuStyles()
+        {
+            if (menuTitle != null) return;
+            menuTitle = new GUIStyle(Skin.TitleDark) { fontSize = 26, alignment = TextAnchor.MiddleLeft, wordWrap = false };
+            menuHint = new GUIStyle(Skin.SmallDark) { alignment = TextAnchor.MiddleRight, wordWrap = false };
+            pageTitle = new GUIStyle(Skin.TitleDark) { fontSize = 20, alignment = TextAnchor.MiddleLeft, wordWrap = false };
+            sectionTitle = new GUIStyle(Skin.TitleDark) { fontSize = 17, alignment = TextAnchor.MiddleLeft, wordWrap = false };
+            bodyDark = new GUIStyle(Skin.LabelDark) { alignment = TextAnchor.UpperCenter, fontStyle = FontStyle.Normal };
+            nameDark = new GUIStyle(Skin.LabelDark) { fontSize = 18 };
+            plainDark = new GUIStyle(Skin.LabelDark) { fontStyle = FontStyle.Normal };
+            bigNumber = new GUIStyle(Skin.Label) { fontSize = 22 };
+            keyHint = new GUIStyle(Skin.SmallDark) { fontSize = 13, alignment = TextAnchor.MiddleLeft };
+        }
+
+        // Cuts `text` with an ellipsis so it fits `width` in `style` (cached: called every OnGUI pass)
+        readonly Dictionary<(string, int, int), string> fitted = new Dictionary<(string, int, int), string>();
+        string Fit(string text, GUIStyle style, float width)
+        {
+            var key = (text, style.fontSize, (int)width);
+            if (fitted.TryGetValue(key, out var cut)) return cut;
+            cut = text;
+            if (style.CalcSize(new GUIContent(text)).x > width)
+            {
+                int n = text.Length;
+                while (n > 1 && style.CalcSize(new GUIContent(text.Substring(0, n) + "…")).x > width) n--;
+                cut = text.Substring(0, n).TrimEnd() + "…";
+            }
+            if (fitted.Count > 256) fitted.Clear();
+            fitted[key] = cut;
+            return cut;
+        }
+
+        static string CivLabel(string civ)
+        {
+            foreach (var (id, name) in C.Civilizations) if (id == civ) return name;
+            return civ ?? "";
+        }
+
+        // The players grouped as they play: one group per team (best total first), each player
+        // without a team on their own; best score first inside each group
+        List<(int team, List<PlayerInfo> members)> TeamGroups()
+        {
+            var groups = new List<(int team, List<PlayerInfo> members)>();
+            foreach (var g in players.Values.Where(p => p.team != 0).GroupBy(p => p.team))
+                groups.Add((g.Key, g.OrderByDescending(p => p.score).ToList()));
+            foreach (var p in players.Values.Where(p => p.team == 0))
+                groups.Add((0, new List<PlayerInfo> { p }));
+            return groups.OrderByDescending(g => g.members.Sum(p => p.score)).ToList();
+        }
+
+        bool TeamGame => players.Values.Any(p => p.team != 0);
+
+        float DrawSummary(Rect r)
+        {
+            float y = r.y;
+            if (players.TryGetValue(myId ?? "", out var me))
+            {
+                Skin.Rect(new Rect(r.x, y + 5, 18, 18), Ink);
+                Skin.Rect(new Rect(r.x + 2, y + 7, 14, 14), GameAssets.Hex(me.color));
+                GUI.Label(new Rect(r.x + 28, y, r.width - 28, 28), Fit(me.name, nameDark, r.width - 28), NoWrap(nameDark));
+                y += 28;
+                var line = $"Civilización de {CivLabel(me.civ)}  ·  Edad {Defs.AgeNumerals[MyAge - 1]}, {Defs.Ages[MyAge - 1].name}  ·  {(me.team == 0 ? "Sin equipo" : $"Equipo {me.team}")}{(me.defeated ? "  ·  Derrotado" : "")}";
+                GUI.Label(new Rect(r.x + 28, y, r.width - 28, 22), line, Skin.SmallDark);
+                y += 36;
+
+                var cards = new (string value, string label)[]
+                {
+                    (me.score.ToString(), "Puntos"), ($"{popUsed} / {popCap}", "Población"), (me.gathered.ToString(), "Recursos recolectados"),
+                    (me.trained.ToString(), "Unidades entrenadas"), (me.kills.ToString(), "Enemigos abatidos"), (me.lost.ToString(), "Unidades perdidas"),
+                };
+                int cols = r.width >= 420 ? 3 : 2;
+                const float CG = 10, CH = 66;
+                float cardW = (r.width - CG * (cols - 1)) / cols;
+                var big = NoWrap(bigNumber, TextAnchor.MiddleCenter);
+                for (int i = 0; i < cards.Length; i++)
+                {
+                    var c = new Rect(r.x + (i % cols) * (cardW + CG), y + (i / cols) * (CH + CG), cardW, CH);
+                    GUI.Box(c, GUIContent.none, Skin.Slot);
+                    GUI.Label(new Rect(c.x, c.y + 8, c.width, 30), cards[i].value, big);
+                    var small = NoWrap(Skin.Small, TextAnchor.MiddleCenter);
+                    small.normal.textColor = TextDim;
+                    GUI.Label(new Rect(c.x + 6, c.y + 38, c.width - 12, 20), Fit(cards[i].label, small, c.width - 12), small);
+                }
+                y += Mathf.CeilToInt(cards.Length / (float)cols) * (CH + CG) + 16;
+            }
+
+            GUI.Label(new Rect(r.x, y, r.width, 26), TeamGame ? "Equipos" : "Jugadores", sectionTitle);
+            y += 32;
+            // Columns: player | civilization | age | points
+            float colPts = r.xMax - 70, colAge = colPts - 70, colCiv = colAge - 90;
+            var head = NoWrap(Skin.SmallDark);
+            GUI.Label(new Rect(r.x + 10, y, 200, 20), "Jugador", head);
+            GUI.Label(new Rect(colCiv, y, 90, 20), "Civilización", head);
+            GUI.Label(new Rect(colAge, y, 70, 20), "Edad", head);
+            GUI.Label(new Rect(colPts, y, 60, 20), "Puntos", NoWrap(Skin.SmallDark, TextAnchor.MiddleRight));
+            y += 24;
+            Skin.Rect(new Rect(r.x, y - 2, r.width, 1), InkLine);
+            const float RowH = 28;
+            foreach (var (team, members) in TeamGroups())
+            {
+                bool grouped = team != 0;
+                float top = y + 6;
+                if (grouped)
+                {
+                    bool ours = me != null && me.team == team;
+                    var box = new Rect(r.x, top, r.width, 30 + members.Count * RowH + 6);
+                    Skin.Rect(box, InkRow);
+                    Skin.Frame(box, ours ? new Color(0.75f, 0.52f, 0.12f, 0.9f) : InkLine, ours ? 2 : 1);
+                    GUI.Label(new Rect(box.x + 10, top + 3, box.width - 90, 24), $"Equipo {team}{(ours ? "  ·  tu equipo" : "")}", NoWrap(Skin.LabelDark));
+                    GUI.Label(new Rect(colPts - 20, top + 3, 80, 24), members.Sum(p => p.score).ToString(), NoWrap(Skin.LabelDark, TextAnchor.MiddleRight));
+                    y = top + 30;
+                }
+                else y = top;
+                foreach (var p in members)
+                {
+                    var row = new Rect(r.x + (grouped ? 6 : 0), y, r.width - (grouped ? 12 : 0), RowH);
+                    if (p.id == myId) Skin.Rect(row, MineRow);
+                    Skin.Rect(new Rect(row.x + 8, y + 8, 12, 12), GameAssets.Hex(p.color));
+                    var style = NoWrap(p.id == myId ? Skin.LabelDark : plainDark);
+                    if (p.defeated) style.normal.textColor = new Color(0.45f, 0.4f, 0.35f);
+                    string tag = (p.id == myId ? "  (tú)" : "") + (p.defeated ? "  · derrotado" : !p.connected ? "  · desconectado" : "");
+                    float nameW = colCiv - row.x - 34;
+                    GUI.Label(new Rect(row.x + 28, y, nameW, RowH), Fit(p.name, style, nameW - style.CalcSize(new GUIContent(tag)).x) + tag, style);
+                    GUI.Label(new Rect(colCiv, y, 90, RowH), CivLabel(p.civ), style);
+                    GUI.Label(new Rect(colAge, y, 70, RowH), Defs.AgeNumerals[Mathf.Clamp(p.age, 1, Defs.AgeNumerals.Length) - 1], style);
+                    GUI.Label(new Rect(colPts - 20, y, 80 - (grouped ? 6 : 0), RowH), p.score.ToString(), NoWrap(p.id == myId ? Skin.LabelDark : plainDark, TextAnchor.MiddleRight));
+                    y += RowH;
+                }
+                if (grouped) y += 8;
+            }
+            return y - r.y + 10;
+        }
+
+        static readonly (string keys, string what)[][] ControlSections =
+        {
+            new[]
+            {
+                ("Clic izquierdo", "Seleccionar"), ("Arrastrar", "Seleccionar en grupo"), ("Doble clic", "Todos los de ese tipo en pantalla"),
+                ("Clic derecho", "Mover, atacar, recolectar o construir"), ("Mayús + clic derecho", "Encadenar órdenes"),
+                ("Ctrl + 1-9", "Crear grupo"), ("1-9", "Seleccionar grupo (dos veces: ir a él)"), (".", "Siguiente aldeano inactivo"), ("H", "Centro urbano"),
+            },
+            new[]
+            {
+                ("Clic izq. en el mapa", "Mover la cámara"), ("Clic der. en el mapa", "Enviar las unidades allí"),
+                ("WASD / flechas", "Mover la cámara"), ("Q / E", "Girar la cámara"), ("Rueda", "Zoom"), ("Botón central", "Arrastrar la cámara"),
+                ("Z X C V B N F G J K", "Acciones de la barra"), ("M", "Silenciar"), ("Esc", "Cancelar / menú"),
+            },
+        };
+
+        // Two columns of key + what it does
+        float DrawControls(Rect r)
+        {
+            bool two = r.width >= 520;
+            float colW = two ? (r.width - 20) / 2 : r.width, keyW = Mathf.Min(170, colW * 0.46f);
+            float bottom = r.y;
+            MenuStyles();
+            var keyStyle = NoWrap(Skin.LabelDark);
+            var whatStyle = keyHint;
+            float y0 = r.y;
+            for (int c = 0; c < ControlSections.Length; c++)
+            {
+                float x = two ? r.x + c * (colW + 20) : r.x, y = two ? y0 : bottom;
+                foreach (var (keys, what) in ControlSections[c])
+                {
+                    var row = new Rect(x, y, colW, 34);
+                    Skin.Rect(row, InkRow);
+                    GUI.Label(new Rect(row.x + 10, y, keyW - 10, 34), Fit(keys, keyStyle, keyW - 14), keyStyle);
+                    GUI.Label(new Rect(row.x + keyW, y, colW - keyW - 8, 34), what, whatStyle);
+                    y += 38;
+                }
+                bottom = Mathf.Max(bottom, y + (two ? 0 : 10));
+            }
+            return bottom - r.y;
+        }
+
+        // ---------- Ranking ----------
+
+        // Top right: every player by points, the player's own row highlighted. In a team game each
+        // team is a box with its total, best team first. Defeated crossed out, disconnected marked.
         void DrawRanking(float W)
         {
-            var list = players.Values.OrderByDescending(p => p.score).ToList();
-            float w = 230, rowH = 22;
-            var panel = Block(new Rect(W - w - 10 - MenuButtonSize - 6, 8, w, 46 + list.Count * rowH));
+            const float RW = 260, RowH = 22, TeamHead = 24;
+            var groups = TeamGroups();
+            bool teams = TeamGame;
+            float h = 40;
+            foreach (var g in groups) h += teams && g.team != 0 ? TeamHead + g.members.Count * RowH + 10 : g.members.Count * RowH + (teams ? 4 : 0);
+            var panel = Block(new Rect(W - RW - 10 - MenuButtonSize - 6, 8, RW, h + 6));
             GUI.Box(panel, GUIContent.none, Skin.Panel);
-            GUI.Label(new Rect(panel.x + 16, panel.y + 10, w - 32, 24), "Ranking", Skin.Label);
-            for (int i = 0; i < list.Count; i++)
+            var title = NoWrap(Skin.Label);
+            GUI.Label(new Rect(panel.x + 14, panel.y + 8, RW - 28, 24), "Clasificación", title);
+            var dim = NoWrap(Skin.Small, TextAnchor.MiddleRight);
+            dim.normal.textColor = TextDim;
+            GUI.Label(new Rect(panel.x + 14, panel.y + 8, RW - 28, 24), "puntos", dim);
+            float y = panel.y + 36;
+            int rank = 0;
+            players.TryGetValue(myId ?? "", out var me);
+            foreach (var (team, members) in groups)
             {
-                var p = list[i];
-                float y = panel.y + 34 + i * rowH;
-                var name = $"{(i == 0 && !p.defeated ? "★" : $"{i + 1}.")} {p.name}{(p.id == myId ? " (tú)" : "")}{(p.connected ? "" : " ⚠")}";
-                Skin.Rect(new Rect(panel.x + 16, y + 5, 12, 12), GameAssets.Hex(p.color));
-                var style = p.id == myId ? Skin.Label : Skin.Small;
-                var old = style.normal.textColor;
-                if (p.defeated) style.normal.textColor = new Color(0.7f, 0.7f, 0.7f);
-                GUI.Label(new Rect(panel.x + 34, y, w - 100, rowH), name, style);
-                GUI.Label(new Rect(panel.xMax - 66, y, 50, rowH), p.score.ToString(), style);
-                style.normal.textColor = old;
-                if (p.defeated) Skin.Rect(new Rect(panel.x + 34, y + 11, w - 70, 1), new Color(0.8f, 0.8f, 0.8f));
+                bool box = teams && team != 0;
+                float x = panel.x + 10, w = RW - 20;
+                if (box)
+                {
+                    bool ours = me != null && me.team == team;
+                    var r = new Rect(x, y, w, TeamHead + members.Count * RowH + 4);
+                    Skin.Rect(r, new Color(1, 1, 1, ours ? 0.1f : 0.05f));
+                    Skin.Frame(r, ours ? new Color(1f, 0.8f, 0.35f, 0.85f) : new Color(1, 1, 1, 0.18f));
+                    rank++;
+                    var head = NoWrap(Skin.Small);
+                    head.normal.textColor = ours ? new Color(1f, 0.85f, 0.45f) : TextDim;
+                    head.fontStyle = FontStyle.Bold;
+                    GUI.Label(new Rect(x + 8, y + 2, w - 70, 20), $"{rank}. Equipo {team}{(ours ? " · tú" : "")}", head);
+                    var total = NoWrap(Skin.Small, TextAnchor.MiddleRight);
+                    total.normal.textColor = head.normal.textColor;
+                    total.fontStyle = FontStyle.Bold;
+                    GUI.Label(new Rect(x + 8, y + 2, w - 16, 20), members.Sum(p => p.score).ToString(), total);
+                    y += TeamHead;
+                    x += 4; w -= 8;
+                }
+                foreach (var p in members)
+                {
+                    if (!box) rank++;
+                    var row = new Rect(x, y, w, RowH);
+                    if (p.id == myId) Skin.Rect(row, new Color(1f, 0.8f, 0.3f, 0.22f));
+                    Skin.Rect(new Rect(x + 6, y + 5, 12, 12), GameAssets.Hex(p.color));
+                    var style = NoWrap(p.id == myId ? Skin.Label : Skin.Small);
+                    style.normal.textColor = p.defeated ? new Color(0.6f, 0.6f, 0.6f) : Color.white;
+                    string prefix = box ? "" : rank == 1 && !p.defeated ? "★ " : $"{rank}. ";
+                    string tag = (p.id == myId ? " (tú)" : "") + (!p.connected && !p.defeated ? " ⚠" : "");
+                    float nameW = w - 24 - 54;
+                    var name = prefix + Fit(p.name, style, nameW - style.CalcSize(new GUIContent(prefix + tag)).x) + tag;
+                    GUI.Label(new Rect(x + 24, y, nameW, RowH), name, style);
+                    var pts = NoWrap(p.id == myId ? Skin.Label : Skin.Small, TextAnchor.MiddleRight);
+                    pts.normal.textColor = style.normal.textColor;
+                    GUI.Label(new Rect(x + w - 56, y, 50, RowH), p.score.ToString(), pts);
+                    if (p.defeated) Skin.Rect(new Rect(x + 24, y + RowH / 2, w - 30, 1), new Color(0.8f, 0.8f, 0.8f, 0.8f));
+                    y += RowH;
+                }
+                y += box ? 10 : teams ? 4 : 0;
             }
         }
 
@@ -542,8 +814,6 @@ namespace RTS.Game
             var art = UnitArt[type];
             var faction = FactionOf(owner);
             Sprite sp;
-            if (!art.rig) sp = GameAssets.Lancer(faction, "idle")[0];
-            else
             {
                 var civ = CivOf(owner);
                 var rig = civ != null && civ != "air" && GameAssets.HasRig($"{art.sheet}_{civ}") ? $"{art.sheet}_{civ}" : art.sheet;
@@ -613,7 +883,7 @@ namespace RTS.Game
             var stats = b.stats;
             string idle = stats.trains != null ? "Listo para entrenar"
                 : stats.population > 0 ? $"Da {stats.population} de población"
-                : stats.attack != null ? $"Dispara a enemigos a {stats.attack.range} de distancia"
+                : stats.attack != null ? $"Dispara a enemigos a {RangeOf(e)} de distancia"
                 : stats.IsFarm ? $"Cosecha: {Mathf.RoundToInt(e.food)} / {stats.farmFood}"
                 : "";
             var wrap = new GUIStyle(label) { wordWrap = true, alignment = TextAnchor.UpperLeft };
@@ -715,12 +985,82 @@ namespace RTS.Game
                 }
                 GUI.EndGroup();
             }
+            if (Event.current.type == EventType.Repaint) DrawMinimapOrders(map, Size);
+            // Left button: move the camera there; right button: send the selected units there (Shift
+            // queues it after what they are doing, like on the ground)
             var e = Event.current;
-            if ((e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && e.button == 0 && map.Contains(e.mousePosition))
+            if (menuOpen || !map.Contains(e.mousePosition)) return;
+            var world = (e.mousePosition - map.position) / Size * (mapTiles * C.TileSize);
+            if ((e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && e.button == 0)
             {
-                var rel = (e.mousePosition - map.position) / Size * (mapTiles * C.TileSize);
-                rts.FocusOn(rel.x, rel.y);
+                rts.FocusOn(world.x, world.y);
                 e.Use();
+            }
+            else if (e.type == EventType.MouseDown && e.button == 1)
+            {
+                var unitIds = SelectedUnitIds();
+                if (unitIds.Count > 0 && placing == null)
+                {
+                    socket.Emit("game:move", new { unitIds, x = world.x, y = world.y, queue = Shift });
+                    markers.Add(new Marker { x = world.x, y = world.y, color = MarkerColors["move"] });
+                    minimapPing = (world, Time.unscaledTime);
+                }
+                else if (placing == null && RallyBuildings().Count > 0)
+                {
+                    SetRally(world, null);
+                    minimapPing = (world, Time.unscaledTime);
+                }
+                placing = null;
+                e.Use();
+            }
+        }
+
+        (Vector2 at, float time) minimapPing = (Vector2.zero, -10);
+
+        // The selected units on the minimap with the trail of their queued orders, and a ring where
+        // the last order sent from the minimap went
+        void DrawMinimapOrders(Rect map, float size)
+        {
+            float k = size / (mapTiles * C.TileSize);
+            Vector2 M(Vector2 p) => new Vector2(map.x + p.x * k, map.y + p.y * k);
+            var trail = new Color(1f, 0.92f, 0.6f, 0.95f);
+            foreach (var id in selected)
+            {
+                if (!sprites.TryGetValue(id, out var s) || s.s.owner != myId) continue;
+                if (s.isBuilding)
+                {
+                    if (s.s.rally == null) continue;
+                    var b = M(new Vector2(s.s.x, s.s.y));
+                    var f = M(s.s.rally.Value);
+                    var col = GameAssets.Hex(ColorOf(myId));
+                    float l = Vector2.Distance(b, f);
+                    for (float d = 3; d < l; d += 4) { var p = Vector2.Lerp(b, f, d / l); Skin.Rect(new Rect(p.x - 1, p.y - 1, 2, 2), col); }
+                    Skin.Rect(new Rect(f.x - 1, f.y - 8, 2, 9), Color.white);
+                    Skin.Rect(new Rect(f.x + 1, f.y - 8, 5, 4), col);
+                    continue;
+                }
+                var from = M(new Vector2(s.gx, s.gy));
+                Skin.Rect(new Rect(from.x - 2, from.y - 2, 4, 4), Color.white);
+                if (s.s.orders == null) continue;
+                foreach (var o in s.s.orders)
+                {
+                    var to = M(o);
+                    float len = Vector2.Distance(from, to);
+                    for (float d = 3; d < len; d += 4)
+                    {
+                        var p = Vector2.Lerp(from, to, d / len);
+                        Skin.Rect(new Rect(p.x - 1, p.y - 1, 2, 2), trail);
+                    }
+                    Skin.Frame(new Rect(to.x - 3, to.y - 3, 6, 6), trail);
+                    from = to;
+                }
+            }
+            float age = Time.unscaledTime - minimapPing.time;
+            if (age < 0.8f)
+            {
+                var c = M(minimapPing.at);
+                float r = 3 + age * 12;
+                Skin.Frame(new Rect(c.x - r, c.y - r, r * 2, r * 2), new Color(0.6f, 1f, 0.6f, 1 - age / 0.8f), 1.5f);
             }
         }
 
@@ -788,7 +1128,7 @@ namespace RTS.Game
                 }
                 if (!Defs.Entity.TryGetValue(barHover, out var b)) return null;
                 string what = b.trains != null ? $"Entrena: {string.Join(", ", b.trains.Select(t => Defs.UnitStats(t, CivOf(myId)).name))}"
-                    : b.attack != null ? $"Dispara flechas · alcance {b.attack.range}"
+                    : b.attack != null ? $"Dispara flechas · alcance {Defs.BuildingRange(barHover, MyAge)} (+{Defs.AgeRangeBonus} por edad)"
                     : b.dropOff ? "Deja aquí cualquier recurso · mejora la recolección"
                     : b.IsFarm ? $"{b.farmFood} comida por siembra · resembrar: {Defs.FormatCost(b.reseedCost)}"
                     : $"+{b.population} población";
@@ -827,7 +1167,7 @@ namespace RTS.Game
 
             if (s.isBuilding)
             {
-                if (stats.attack != null) ls.Add($"Dispara a unidades enemigas: {stats.attack.damage} daño cada {stats.attack.cooldown}s · alcance {stats.attack.range}");
+                if (stats.attack != null) ls.Add($"Dispara a unidades enemigas: {stats.attack.damage} daño cada {stats.attack.cooldown}s · alcance {RangeOf(e)}");
                 if (stats.population > 0) ls.Add($"+{stats.population} población");
                 if (stats.dropOff && e.built)
                 {

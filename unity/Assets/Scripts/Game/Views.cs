@@ -63,7 +63,8 @@ namespace RTS.Game
         public string modelPath;        // resource it was built from (per civilization)
         public Renderer[] modelRenderers;
         public MaterialPropertyBlock modelProps;
-        public float ageAnimAt = -10;   // when it was rebuilt in its owner's new age
+        public float ageAnimAt = -10;   // when its rise in its owner's new age starts (after a wave delay)
+        public bool ageFxDone = true;   // the dust and sparkles of that rise have been played
         public int wallMask = -1;       // walls: joined neighbours (GameView.WallMask)
         public Transform door;          // gates: the door node, sinking to open
         public Vector3 doorBase;

@@ -1,6 +1,6 @@
 export const TICK_RATE = 20; // server updates per second
 export const PORT = Number(globalThis.process?.env?.PORT) || 3001;
-// One faction per player (matches the Tiny Swords colour sets); color is used for UI accents
+// One faction per player; color is used for UI accents
 // Pastel but still distinct from each other and from the muted scenery
 export const FACTIONS = [
   { id: 'blue', color: 0x6c9bd6 },
@@ -38,7 +38,7 @@ export const CIV_STATS = {
       },
     },
     // Fire mage: slow fireballs that keep the target burning
-    archer: { name: 'Mago de fuego', attack: { damage: 6.2, range: 160, cooldown: 2, burn: { dps: 2, duration: 2 } } },
+    archer: { name: 'Mago de fuego', attack: { damage: 6.2, range: 230, cooldown: 2, burn: { dps: 2, duration: 2 } } },
     swordsman: { name: 'Espadachín de fuego', attack: { damage: 10, range: 0, cooldown: 1.15 } },
   },
   earth: {
@@ -53,7 +53,7 @@ export const CIV_STATS = {
     archer: {
       name: 'Geomante',
       attack: {
-        damage: 7.2, range: 160, cooldown: 2.2, line: { width: 16, splash: 0.4 }, vsBuildings: 3,
+        damage: 7.2, range: 230, cooldown: 2.2, line: { width: 16, splash: 0.4 }, vsBuildings: 3,
       },
     },
     // Rock-fisted brawler: slower, heavier punches
@@ -68,7 +68,7 @@ export const CIV_STATS = {
       },
     },
     // Hydromancer: ice shards that slow the target
-    archer: { name: 'Hidromante', attack: { damage: 4.8, range: 160, cooldown: 1.3, chill: { factor: 0.88, duration: 1.2 } } },
+    archer: { name: 'Hidromante', attack: { damage: 4.8, range: 230, cooldown: 1.3, chill: { factor: 0.88, duration: 1.2 } } },
     // Water whip: quick, light lashes
     swordsman: { name: 'Guerrero de agua', speed: 74, attack: { damage: 8, range: 0, cooldown: 0.85 } },
   },
@@ -141,6 +141,15 @@ export const EntityType = {
 
 // Ages, Age of Empires style: every player starts in the first and advances at a town center (it
 // can't train villagers meanwhile). Buildings and units have the age they become available in.
+// Buildings that shoot (town centers, towers, fortresses) reach this much further with each age
+// their owner has advanced past the first
+export const AGE_RANGE_BONUS = 45;
+
+// Looks the host can pick for the map; the rules and the world are the same in all of them.
+// spirit (the spirit dimension): red grass, grey mountains, shallow water where the beaches are and a
+// bottomless void with waterfalls where the rivers and the sea are
+export const MAP_THEMES = ['classic', 'spirit'];
+
 export const AGES = [
   { name: 'Edad de la Aldea' },
   { name: 'Edad de la Ciudad', cost: { food: 400 }, time: 50 },
@@ -219,12 +228,12 @@ export const ENTITY_STATS = {
   // Elementalist (air: gusts from two fans); the other civilizations' casters in CIV_STATS
   [EntityType.ARCHER]: {
     kind: 'unit', name: 'Místico del viento', radius: 10, speed: 74, hp: 35, cost: { food: 40, gold: 45 }, trainTime: 15, age: 2,
-    attack: { damage: 5.8, range: 160, cooldown: 1.4 }, aggroRange: 220,
+    attack: { damage: 5.8, range: 230, cooldown: 1.4 }, aggroRange: 290,
   },
   // Bowman: the same for every civilization; cheaper than an elementalist, plain arrows a little further
   [EntityType.BOWMAN]: {
     kind: 'unit', name: 'Arquero', radius: 10, speed: 74, hp: 35, cost: { food: 30, wood: 40 }, trainTime: 12,
-    attack: { damage: 4.6, range: 175, cooldown: 1.5 }, aggroRange: 235,
+    attack: { damage: 4.6, range: 250, cooldown: 1.5 }, aggroRange: 310,
   },
   [EntityType.HORSEMAN]: {
     // Wind flyer: flies when moving; attacks by diving onto the target, and the impact gust hits every

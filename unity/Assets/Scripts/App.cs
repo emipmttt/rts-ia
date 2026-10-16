@@ -139,6 +139,7 @@ namespace RTS
             var data = camGo.AddComponent<UniversalAdditionalCameraData>();
             data.renderPostProcessing = true;
             data.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+            Outlines.Attach(cam);
 
             // Soft, slightly pastel daylight (Hilda-like): a pale sun, cool sky light, gentle shadows
             var sunGo = new GameObject("Sun");
@@ -264,7 +265,7 @@ namespace RTS
                 game = GameView.Create(socket, myId, d, cam);
                 if (AutoTest.Enabled) StartCoroutine(AutoTest.Run(game));
             });
-            socket.On("game:state", d => game?.ApplyState(d));
+            socket.OnState = d => game?.ApplyState(d);
             socket.On("game:resources", d => game?.ApplyResourceChanges(d));
             socket.On("game:shots", d => game?.AddShots(d));
             socket.On("game:ageup", d => game?.OnAgeUp((string)d["playerId"], (int)d["age"]));
@@ -375,7 +376,9 @@ namespace RTS
 
         // ---------- Main menu ----------
 
-        const string GameTitle = "Tiny Swords RTS";
+        const string GameTitle = "Age of Elemental Wars";
+        static readonly (string id, string name)[] MapThemes = { ("classic", "Valle clásico"), ("spirit", "Dimensión de los espíritus") };
+        static string MapName(string id) { foreach (var (i, n) in MapThemes) if (i == id) return n; return id; }
 
         void DrawMainMenu(float W, float H)
         {
@@ -538,7 +541,7 @@ namespace RTS
                 {
                     var room = rooms[i];
                     var status = room.status == "playing" ? "(en partida)" : room.status == "finished" ? "(terminada)" : "";
-                    GUI.Label(new Rect(0, i * 46 + 8, cw - 150, 30), $"{room.name} — {room.players}/{room.max} {status}{(room.central ? "" : " · sin castillo")}", Skin.LabelDark);
+                    GUI.Label(new Rect(0, i * 46 + 8, cw - 150, 30), $"{room.name} — {room.players}/{room.max} {status}{(room.central ? "" : " · sin castillo")}{(room.map == "classic" ? "" : $" · {MapName(room.map)}")}", Skin.LabelDark);
                     GUI.enabled = room.status == "waiting" && room.players < room.max;
                     if (GUI.Button(new Rect(cw - 140, i * 46, 116, 40), "Unirse", Skin.Button))
                         socket.Emit("room:join", new { roomId = room.id, playerName = playerName.Trim(), flag = ExportFlag() });
@@ -595,7 +598,7 @@ namespace RTS
             y += 24;
             // Player list scrolls when the room is too full for the panel (up to 10 players)
             const float Row = 38;
-            float listBottom = panel.yMax - 112 - 64 - (isHost ? 46 : 0);
+            float listBottom = panel.yMax - 112 - 64 - 44 - (isHost ? 46 : 0);
             float contentH = currentRoom.playerList.Count * Row + 46;
             var listRect = new Rect(x - 8, y, cw + 16, Mathf.Max(80, listBottom - y));
             bool scrolls = contentH > listRect.height;
@@ -657,6 +660,22 @@ namespace RTS
             if (central != currentRoom.central) socket.Emit("room:settings", new { central });
             GUI.enabled = true;
             GUI.Label(new Rect(x + 22, y + 24, cw - 22, 36), "Se gana dominándola; sin ella solo se gana destruyendo a los rivales", Skin.SmallDark);
+            // The map's look: only the host picks it, everyone sees the choice
+            y += 62;
+            GUI.Label(new Rect(x, y + 7, 70, 26), "Mapa:", Skin.LabelDark);
+            var mapStyle = new GUIStyle(Skin.Button) { fontSize = 14 };
+            for (int i = 0; i < MapThemes.Length; i++)
+            {
+                var (id, label) = MapThemes[i];
+                bool on = currentRoom.map == id;
+                GUI.enabled = isHost || on;
+                if (GUI.Toggle(new Rect(x + 74 + i * 236, y, 228, 36), on, label, mapStyle) && !on && isHost)
+                {
+                    Sfx.Play("click");
+                    socket.Emit("room:settings", new { map = id });
+                }
+            }
+            GUI.enabled = true;
             y = panel.yMax - 112;
             if (isHost && GUI.Button(new Rect(x, y, 220, 48), "Iniciar partida", new GUIStyle(Skin.Button) { fontSize = 20 })) { Sfx.Play("click"); socket.Emit("room:start"); }
             if (GUI.Button(new Rect(x + cw - 200, y, 200, 48), "Salir de la sala", Skin.RedButton)) { Sfx.Play("click"); socket.Emit("room:leave"); }

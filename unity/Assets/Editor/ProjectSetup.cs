@@ -113,7 +113,7 @@ public static class ProjectSetup
         always.ApplyModifiedPropertiesWithoutUndo();
 
         PlayerSettings.colorSpace = ColorSpace.Linear;
-        PlayerSettings.productName = "Tiny Swords RTS 3D";
+        PlayerSettings.productName = "Age of Elemental Wars";
         PlayerSettings.runInBackground = true;
 
         // Scene: an empty scene with the bootstrap object (everything else is built at runtime)

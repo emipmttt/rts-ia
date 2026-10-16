@@ -30,7 +30,7 @@ namespace RTS.Game
                 foreach (var s in sprites.Values)
                 {
                     if (!Allied(s.s.owner) || s.gone) continue; // teammates share their vision
-                    float sight = Defs.Sight(s.s.type);
+                    float sight = Defs.Sight(s.s.type, AgeOf(s.s.owner));
                     if (s.isBuilding && !s.s.built) sight *= UnfinishedSight;
                     fog.Reveal(s.gx, s.gy, sight);
                 }
@@ -118,11 +118,12 @@ namespace RTS.Game
             return InSight(p.x, p.y);
         }
 
-        // Buildings can only be placed on explored ground
-        bool FootprintExplored(string type, int tx, int ty)
+        // Buildings can only be placed on ground in sight right now: never in the black of unexplored
+        // land nor in the grey fog of land seen before
+        bool FootprintInSight(string type, int tx, int ty)
         {
             foreach (var (x, y) in Defs.Footprint(type, tx, ty))
-                if (!fog.ExploredTile(x, y)) return false;
+                if (!fog.VisibleTile(x, y)) return false;
             return true;
         }
     }

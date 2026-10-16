@@ -1,10 +1,10 @@
 import {
   TICK_RATE, TILE_SIZE, MAX_PLAYERS_PER_ROOM, MAX_TEAMS, STARTING_VILLAGERS, STARTING_STOCK,
   MAX_TRAIN_QUEUE, CENTRAL_CONTROL_TIME, FACTIONS, CIVILIZATIONS, EntityType, ENTITY_STATS, unitStats, RESOURCE_STATS, MAX_POPULATION,
-  Terrain, ResourceType, mapTilesFor, SCORE, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP, AGES,
+  Terrain, ResourceType, mapTilesFor, SCORE, MAP_THEMES, CENTRAL_HP, CENTRAL_GUARDS, GUARD_LEASH, GATHER_UPGRADES, SHEEP, AGES,
 } from '../shared/constants.js';
 import {
-  isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford, wallLine,
+  isBuildingType, isUnitType, buildingSize, buildingCenter, tileForCenter, footprint, canPlace, canAfford, wallLine, wallCells, snapWall, buildingRange,
 } from '../shared/rules.js';
 import { assignSpawns } from './spawns.js';
 import { generateWorld } from './worldgen.js';
@@ -78,7 +78,7 @@ export class GameRoom {
     this.shots = []; // arrows fired this tick, sent to clients for the animation
     this.world = null;
     this.central = null; // the neutral, indestructible town center in the middle of the map
-    this.settings = { central: true }; // chosen by the host before starting
+    this.settings = { central: true, map: 'classic' }; // chosen by the host before starting
     this.startingPlayers = 0;
     this.nextEntityId = 1;
     this.interval = null;
@@ -100,9 +100,10 @@ export class GameRoom {
   }
 
   // Host-only match options, while the room is waiting
-  updateSettings(playerId, { central } = {}) {
+  updateSettings(playerId, { central, map } = {}) {
     if (playerId !== this.hostId || this.status !== RoomStatus.WAITING) return;
     if (typeof central === 'boolean') this.settings.central = central;
+    if (MAP_THEMES.includes(map)) this.settings.map = map;
     this.broadcastRoom();
     this.onStatusChange();
   }
@@ -256,7 +257,7 @@ export class GameRoom {
   // Everything a client needs to draw the game from scratch (at the start, or after reconnecting)
   startPayload() {
     return {
-      map: { width: this.mapSize, height: this.mapSize, tiles: this.world.tiles },
+      map: { width: this.mapSize, height: this.mapSize, tiles: this.world.tiles, theme: this.settings.map ?? 'classic' },
       resources: [...this.resources.values()].map(({
         id, type, variant, tx, ty, amount, max,
       }) => ({
@@ -324,7 +325,12 @@ export class GameRoom {
       maxHp,
       research: null, // lumber camps only: { level, progress }
     };
-    for (const [cx, cy] of footprint(type, tx, ty)) this.buildingTiles.set(tileKey(cx, cy), id);
+    // A wall piece fills round trees, mines, water and buildings in its cell: only the free tiles are its own
+    if (ENTITY_STATS[type].wall) {
+      const cells = wallCells(tx, ty, this.isWallBlocked, this.mapTiles);
+      if (cells.length < footprint(type, tx, ty).length) building.cells = cells;
+    }
+    for (const [cx, cy] of this.cellsOf(building)) this.buildingTiles.set(tileKey(cx, cy), id);
     this.setBuildingCells(building, true);
     this.entities.set(id, building);
     return building;
@@ -334,7 +340,7 @@ export class GameRoom {
   // and, for their owner, gates
   setBuildingCells(b, solid) {
     if (!this.walkBlocked || ENTITY_STATS[b.type].farm) return;
-    for (const [cx, cy] of footprint(b.type, b.tx, b.ty)) {
+    for (const [cx, cy] of this.cellsOf(b)) {
       if (cx < 0 || cy < 0 || cx >= this.mapTiles || cy >= this.mapTiles) continue;
       const i = cy * this.mapTiles + cx;
       if (ENTITY_STATS[b.type].gate) {
@@ -368,8 +374,40 @@ export class GameRoom {
   removeEntity(e) {
     this.entities.delete(e.id);
     if (isBuilding(e)) {
-      for (const [cx, cy] of footprint(e.type, e.tx, e.ty)) this.buildingTiles.delete(tileKey(cx, cy));
+      const freed = this.cellsOf(e);
+      for (const [cx, cy] of freed) this.buildingTiles.delete(tileKey(cx, cy));
       this.setBuildingCells(e, false);
+      for (const [cx, cy] of freed) this.growWall(cx, cy);
+    }
+  }
+
+  // Tiles a building stands on (a wall piece may have only part of its cell)
+  cellsOf(b) { return b.cells ?? footprint(b.type, b.tx, b.ty); }
+
+  // Tiles a wall piece can't take: buildings, trees, mines, water and bridges (bushes are fine)
+  isWallBlocked = (x, y) => {
+    if (this.buildingTiles.has(tileKey(x, y))) return true;
+    const r = this.resources.get(this.resourceTiles.get(tileKey(x, y)));
+    if (r && isSolidResource(r)) return true;
+    const t = this.world.tiles[y * this.mapTiles + x];
+    return t === Terrain.WATER || t === Terrain.BRIDGE;
+  };
+
+  // A tile freed inside a partial wall piece's cell (a tree felled, a mine emptied, a building gone)
+  // is taken by the piece, so the wall stays closed
+  growWall(x, y) {
+    if (this.isWallBlocked(x, y)) return;
+    const cx = snapWall(x), cy = snapWall(y);
+    for (const [fx, fy] of footprint(EntityType.WALL, cx, cy)) {
+      const w = this.entities.get(this.buildingTiles.get(tileKey(fx, fy)));
+      if (!w || !w.cells || w.tx !== cx || w.ty !== cy) continue;
+      w.cells.push([x, y]);
+      if (w.cells.length >= footprint(w.type, w.tx, w.ty).length) delete w.cells;
+      this.buildingTiles.set(tileKey(x, y), w.id);
+      const i = y * this.mapTiles + x;
+      if (!this.walkBlocked[i]) this.setCell(i, BUILDING_CELL);
+      this.gridVersion++;
+      return;
     }
   }
 
@@ -501,12 +539,16 @@ export class GameRoom {
     const { cost } = ENTITY_STATS[type];
     if (!this.hasAge(player, type)) return;
     if (!canAfford(player.stock, cost)) return this.error(playerId, 'Recursos insuficientes');
-    // A gate can take the place of one of our own wall pieces (any of its tiles), right where it stood
+    if (ENTITY_STATS[type].wall) return this.handleWall(playerId, { tx0: tx, ty0: ty, tx1: tx, ty1: ty, unitIds, onlyThese });
+    // Gates sit on the wall grid; one can take the place of one of our own wall pieces right where it stood
+    if (ENTITY_STATS[type].gate) { tx = snapWall(tx); ty = snapWall(ty); }
     const wall = ENTITY_STATS[type].gate && footprint(type, tx, ty)
       .map(([x, y]) => this.entities.get(this.buildingTiles.get(tileKey(x, y))))
       .find((w) => w && w.owner === playerId && ENTITY_STATS[w.type].wall);
-    if (wall) { ({ tx, ty } = wall); this.removeEntity(wall); }
-    if (!canPlace(type, tx, ty, this.isTileBlocked, this.mapTiles)) return this.error(playerId, 'No se puede construir ahí');
+    // (checked before the piece comes down: a gate needs its whole cell, a piece against a tree won't do)
+    const blocked = wall ? (x, y) => this.buildingTiles.get(tileKey(x, y)) !== wall.id && this.isTileBlocked(x, y) : this.isTileBlocked;
+    if (!canPlace(type, tx, ty, blocked, this.mapTiles)) return this.error(playerId, 'No se puede construir ahí');
+    if (wall) this.removeEntity(wall);
 
     let builders = this.ownedVillagers(playerId, unitIds);
     if (!builders.length && !onlyThese) {
@@ -542,7 +584,7 @@ export class GameRoom {
     const { cost } = ENTITY_STATS[EntityType.WALL];
     const placed = [];
     for (const [x, y] of wallLine(tx0, ty0, tx1, ty1)) {
-      if (!canPlace(EntityType.WALL, x, y, this.isTileBlocked, this.mapTiles)) continue;
+      if (!wallCells(x, y, this.isWallBlocked, this.mapTiles).length) continue;
       if (!canAfford(player.stock, cost)) { this.error(playerId, 'No alcanza la piedra para todo el muro'); break; }
       for (const [k, v] of Object.entries(cost)) player.stock[k] -= v;
       placed.push(this.addBuilding(EntityType.WALL, playerId, x, y, false));
@@ -917,9 +959,9 @@ export class GameRoom {
   // Keeps a unit's (or sheep's) body out of trees, gold mines and water
   pushOutOfTerrain(u) {
     const r = bodyOf(u).radius * TERRAIN_RADIUS;
+    const grid = this.gridFor(u.owner);
     const cx = Math.floor(u.x / TILE_SIZE);
     const cy = Math.floor(u.y / TILE_SIZE);
-    const grid = this.gridFor(u.owner);
     for (let ty = cy - 1; ty <= cy + 1; ty++) {
       for (let tx = cx - 1; tx <= cx + 1; tx++) {
         if (tx < 0 || ty < 0 || tx >= this.mapTiles || ty >= this.mapTiles || !grid[ty * this.mapTiles + tx]) continue;
@@ -943,6 +985,23 @@ export class GameRoom {
         }
       }
     }
+    this.blockPinch(u, grid);
+  }
+
+  // A body can't end a tick anywhere it couldn't have walked to from where it started: shoved by other
+  // units or pushed out of a building through a wall, or squeezed diagonally between two tiles that
+  // only touch at a corner (a diagonal wall, a wall against a tree), it goes back. Not when it started
+  // inside something (a building finished over it), so it can still get out.
+  blockPinch(u, grid) {
+    if (u.prevX == null) return;
+    const N = this.mapTiles;
+    const px = Math.floor(u.prevX / TILE_SIZE), py = Math.floor(u.prevY / TILE_SIZE);
+    const cx = Math.floor(u.x / TILE_SIZE), cy = Math.floor(u.y / TILE_SIZE);
+    if (px === cx && py === cy) return;
+    if (px < 0 || py < 0 || px >= N || py >= N || grid[py * N + px]) return;
+    if (clearLine(grid, u.prevX, u.prevY, u.x, u.y, 0)) return;
+    u.x = u.prevX;
+    u.y = u.prevY;
   }
 
   updateGatherer(u) {
@@ -1008,6 +1067,7 @@ export class GameRoom {
       this.resources.delete(resource.id);
       this.resourceTiles.delete(tileKey(resource.tx, resource.ty));
       if (isSolidResource(resource)) this.setCell(resource.ty * this.mapTiles + resource.tx, 0);
+      this.growWall(resource.tx, resource.ty);
     }
   }
 
@@ -1281,8 +1341,9 @@ export class GameRoom {
     const { attack } = ENTITY_STATS[b.type];
     if (!attack || !b.built || (!b.owner && !b.central) || b.hp <= 0) return;
     b.cooldown = Math.max(0, b.cooldown - DT);
+    const range = buildingRange(b.type, this.players.get(b.owner)?.age);
     const inRange = (e) => e && isUnit(e) && !this.allied(e.owner, b.owner)
-      && Math.hypot(e.x - b.x, e.y - b.y) <= attack.range + ENTITY_STATS[e.type].radius;
+      && Math.hypot(e.x - b.x, e.y - b.y) <= range + ENTITY_STATS[e.type].radius;
 
     let target = this.entities.get(b.targetId);
     if (!inRange(target)) {
@@ -1434,12 +1495,44 @@ export class GameRoom {
     const distance = this.outside(b, angle, ENTITY_STATS[unitType].radius);
     const player = this.players.get(b.owner);
     if (player) player.stats.trained++;
-    this.addUnit(
+    const unit = this.addUnit(
       unitType,
       b.owner,
       clamp(b.x + Math.cos(angle) * distance, 0, this.mapSize),
       clamp(b.y + Math.sin(angle) * distance, 0, this.mapSize),
     );
+    this.goToRally(b, unit);
+  }
+
+  // Rally point: where a building's new units head. On a resource (or one of our farms) villagers
+  // start gathering it straight away; anyone else just walks there
+  handleRally(playerId, { buildingIds, x, y, resourceId, buildingId }) {
+    if (this.status !== RoomStatus.PLAYING || !Array.isArray(buildingIds)) return;
+    const resource = resourceId != null ? this.resources.get(resourceId) : null;
+    const target = buildingId != null ? this.entities.get(buildingId) : null;
+    const onFarm = target && target.owner === playerId && ENTITY_STATS[target.type].farm;
+    const at = resource ?? (onFarm ? target : null) ?? { x, y };
+    for (const id of buildingIds) {
+      const b = this.entities.get(id);
+      if (!b || b.owner !== playerId || !isBuilding(b) || !ENTITY_STATS[b.type].trains) continue;
+      // Clicking the building itself clears its rally point
+      if (target === b) { delete b.rally; continue; }
+      if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) continue;
+      b.rally = { x: clamp(at.x, 0, this.mapSize), y: clamp(at.y, 0, this.mapSize) };
+      if (resource) b.rally.resourceId = resource.id;
+      else if (onFarm) b.rally.buildingId = target.id;
+    }
+  }
+
+  goToRally(b, u) {
+    const rally = b.rally;
+    if (!rally || !u) return;
+    if (u.type === EntityType.VILLAGER) {
+      if (rally.resourceId != null && this.resources.has(rally.resourceId)) return this.handleGather(u.owner, { unitIds: [u.id], resourceId: rally.resourceId });
+      const farm = rally.buildingId != null && this.entities.get(rally.buildingId);
+      if (farm?.built) return this.handleFarm(u.owner, { unitIds: [u.id], buildingId: farm.id });
+    }
+    this.handleMove(u.owner, { unitIds: [u.id], x: rally.x, y: rally.y });
   }
 
   // Units alive plus units waiting in queues count against the cap, which houses and town centers raise
@@ -1614,6 +1707,7 @@ export class GameRoom {
     if (e.civ) o.civ = e.civ;
     if (isBuilding(e)) {
       o.tx = e.tx; o.ty = e.ty;
+      if (e.cells) o.cells = e.cells.reduce((m, [x, y]) => m | (1 << ((y - e.ty) * 2 + (x - e.tx))), 0); // partial wall piece
       if (!e.built) { o.built = false; o.buildProgress = r2(e.buildProgress); }
       if (e.queue?.length) { o.queue = e.queue; o.trainProgress = r2(e.trainProgress); }
       if (e.central) { o.central = true; o.controlTime = r1(e.controlTime ?? 0); }
@@ -1621,6 +1715,7 @@ export class GameRoom {
       if (e.maxHp != null && e.maxHp !== ENTITY_STATS[e.type].hp) o.maxHp = e.maxHp;
       if (e.research) o.research = { ...e.research, progress: r2(e.research.progress ?? 0) };
       if (e.ageUp) o.ageUp = { ...e.ageUp, progress: r2(e.ageUp.progress ?? 0) };
+      if (e.rally) o.rally = [Math.round(e.rally.x), Math.round(e.rally.y)];
       return o;
     }
     const t = e.task;
@@ -1628,7 +1723,11 @@ export class GameRoom {
     if (t?.type === 'build' || t?.type === 'farm') o.buildingId = t.buildingId;
     if (t?.type === 'attack' || t?.type === 'heal') o.targetId = t.targetId;
     if (t?.type === 'gather') o.resourceId = t.resourceId;
-    if (e.orders?.length) o.orders = e.orders.map((q) => [Math.round(q.x), Math.round(q.y)]);
+    if (e.orders?.length) {
+      // Where it is heading now, then each queued waypoint
+      o.orders = e.orders.map((q) => [Math.round(q.x), Math.round(q.y)]);
+      if (Math.hypot(e.tx - e.x, e.ty - e.y) > 8) o.orders.unshift([Math.round(e.tx), Math.round(e.ty)]);
+    }
     if (e.action) o.action = e.action;
     if (e.carry?.amount > 0 || e.carry?.type) o.carry = e.carry;
     if (e.type === EntityType.VILLAGER) {

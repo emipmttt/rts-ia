@@ -136,6 +136,8 @@ namespace RTS.Game
             return k >= 0 && explored[k];
         }
 
+        public bool VisibleTile(int tx, int ty) => Visible((tx + 0.5f) * C.TileSize, (ty + 0.5f) * C.TileSize);
+
         public bool ExploredTile(int tx, int ty) => Explored((tx + 0.5f) * C.TileSize, (ty + 0.5f) * C.TileSize);
 
         // Any of a building's footprint in sight: its centre or a point inside each corner

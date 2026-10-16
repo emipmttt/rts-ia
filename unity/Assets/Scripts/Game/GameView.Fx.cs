@@ -40,6 +40,9 @@ namespace RTS.Game
         class Spike { public float x, y, t, height; public bool dusted; }
 
         readonly List<Bit> bits = new List<Bit>();
+        readonly Stack<Bit> freeBits = new Stack<Bit>();
+        // Sprite renderers of finished effects and landed arrows, reused instead of created/destroyed
+        readonly Stack<SpriteRenderer> freeFx = new Stack<SpriteRenderer>(), freeArrows = new Stack<SpriteRenderer>();
         readonly List<Wave> waves = new List<Wave>();
         readonly List<Projectile> arrows = new List<Projectile>(), gusts = new List<Projectile>(), fireballs = new List<Projectile>();
         readonly List<Projectile> boulders = new List<Projectile>(), shards = new List<Projectile>();
@@ -54,7 +57,11 @@ namespace RTS.Game
         void AddBit(Vector3 pos, Vector3 vel, float life, int[] colors, int color = 0xffffff, float g = 0, float max = -1)
         {
             // Capped: a huge battle on screen would otherwise pile up tens of thousands and stall the frame
-            if (bits.Count < (Settings.Particles ? MaxBits : MaxBits / 6) && InSight(pos)) bits.Add(new Bit { pos = pos, vel = vel, life = life, max = max > 0 ? max : life, colors = colors, color = color, g = g });
+            if (bits.Count >= (Settings.Particles ? MaxBits : MaxBits / 6) || !InSight(pos)) return;
+            // Reused from the pool: thousands of short-lived pixels per second in a fight
+            var b = freeBits.Count > 0 ? freeBits.Pop() : new Bit();
+            b.pos = pos; b.vel = vel; b.life = life; b.max = max > 0 ? max : life; b.colors = colors; b.color = color; b.g = g;
+            bits.Add(b);
         }
 
         // Scatters n loose pixels from pos: `speed` outward over the ground, `up` extra upward kick,
@@ -74,14 +81,25 @@ namespace RTS.Game
         // One-shot sprite animation at a world position (dust, explosions, blasts)
         SpriteRenderer SpawnFx(string name, Vector3 pos, float scale = 1, float fps = 18)
         {
-            var go = new GameObject("Fx " + name);
-            go.transform.SetParent(worldRoot, false);
-            go.transform.position = pos;
-            go.transform.rotation = billboardRot;
-            go.transform.localScale = Vector3.one * scale;
-            var sr = go.AddComponent<SpriteRenderer>();
-            sr.sharedMaterial = Materials.SpriteGlow;
-            sr.shadowCastingMode = ShadowCastingMode.Off;
+            SpriteRenderer sr;
+            if (freeFx.Count > 0)
+            {
+                sr = freeFx.Pop();
+                sr.color = Color.white;
+                sr.flipX = false;
+                sr.gameObject.SetActive(true);
+            }
+            else
+            {
+                var go = new GameObject("Fx");
+                go.transform.SetParent(worldRoot, false);
+                sr = go.AddComponent<SpriteRenderer>();
+                sr.sharedMaterial = Materials.SpriteGlow;
+                sr.shadowCastingMode = ShadowCastingMode.Off;
+            }
+            sr.transform.position = pos;
+            sr.transform.rotation = billboardRot;
+            sr.transform.localScale = Vector3.one * scale;
             var frames = GameAssets.Fx(name);
             sr.sprite = frames[0];
             fxAnims.Add(new FxAnim { sr = sr, frames = frames, fps = fps });
@@ -95,7 +113,13 @@ namespace RTS.Game
                 var f = fxAnims[i];
                 f.t += dt;
                 int frame = (int)(f.t * f.fps);
-                if (frame >= f.frames.Length) { Destroy(f.sr.gameObject); fxAnims.RemoveAt(i); continue; }
+                if (frame >= f.frames.Length)
+                {
+                    f.sr.gameObject.SetActive(false);
+                    freeFx.Push(f.sr);
+                    fxAnims.RemoveAt(i);
+                    continue;
+                }
                 f.sr.sprite = f.frames[frame];
                 f.sr.transform.rotation = billboardRot;
             }
@@ -105,7 +129,7 @@ namespace RTS.Game
             {
                 var b = bits[i];
                 b.life -= dt;
-                if (b.life <= 0) { bits[i] = bits[bits.Count - 1]; bits.RemoveAt(bits.Count - 1); continue; }
+                if (b.life <= 0) { bits[i] = bits[bits.Count - 1]; bits.RemoveAt(bits.Count - 1); freeBits.Push(b); continue; }
                 b.vel.y -= b.g * P * dt;
                 b.pos += b.vel * dt;
                 b.vel *= drag;
@@ -474,6 +498,11 @@ namespace RTS.Game
             for (int i = arrows.Count - 1; i >= 0; i--)
             {
                 var a = arrows[i];
+                if (a.sprite == null && freeArrows.Count > 0)
+                {
+                    a.sprite = freeArrows.Pop();
+                    a.sprite.gameObject.SetActive(true);
+                }
                 if (a.sprite == null)
                 {
                     var go = new GameObject("Arrow");
@@ -497,7 +526,8 @@ namespace RTS.Game
                 if (fwd.sqrMagnitude > 0.001f) a.sprite.transform.rotation = Quaternion.LookRotation(fwd, Vector3.Cross(fwd, right));
                 if (a.t >= 1)
                 {
-                    Destroy(a.sprite.gameObject);
+                    a.sprite.gameObject.SetActive(false);
+                    freeArrows.Push(a.sprite);
                     var sp = global::RTS.World.Ground.ToServer(a.to);
                     SfxAt("arrowHit", sp.x, sp.y);
                     arrows.RemoveAt(i);

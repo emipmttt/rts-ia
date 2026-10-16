@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no">
+    <title>{{{ PRODUCT_NAME }}}</title>
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #17131c; }
+      #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+      #loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        font: bold 28px monospace; color: #f4e3b5; letter-spacing: 2px; text-shadow: 3px 3px 0 #000; }
+      #bar { margin-top: 24px; width: min(420px, 80vw); height: 18px; background: #2a2230; border: 3px solid #f4e3b5; box-shadow: 4px 4px 0 #000; }
+      #fill { width: 0; height: 100%; background: #e2a13d; box-shadow: inset 0 -4px 0 #b06d22; }
+      #warn { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); font: 14px monospace; color: #fff; }
+      #warn div { padding: 8px 12px; margin-bottom: 4px; background: #8a2f2f; border: 2px solid #000; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game" tabindex="-1"></canvas>
+    <div id="loading">{{{ PRODUCT_NAME }}}<div id="bar"><div id="fill"></div></div></div>
+    <div id="warn"></div>
+    <script>
+      var canvas = document.querySelector("#game");
+      function showBanner(msg, type) {
+        if (type != 'error' && type != 'warning') return;
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        document.querySelector("#warn").appendChild(div);
+        if (type == 'warning') setTimeout(function () { div.remove(); }, 5000);
+      }
+      var buildUrl = "Build";
+      var config = {
+        arguments: [],
+        dataUrl: buildUrl + "/{{{ DATA_FILENAME }}}",
+        frameworkUrl: buildUrl + "/{{{ FRAMEWORK_FILENAME }}}",
+#if USE_THREADS
+        workerUrl: buildUrl + "/{{{ WORKER_FILENAME }}}",
+#endif
+#if USE_WASM
+        codeUrl: buildUrl + "/{{{ CODE_FILENAME }}}",
+#endif
+#if SYMBOLS_FILENAME
+        symbolsUrl: buildUrl + "/{{{ SYMBOLS_FILENAME }}}",
+#endif
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: {{{ JSON.stringify(COMPANY_NAME) }}},
+        productName: {{{ JSON.stringify(PRODUCT_NAME) }}},
+        productVersion: {{{ JSON.stringify(PRODUCT_VERSION) }}},
+        showBanner: showBanner,
+        // Full window: at most 1.5 render pixels per screen pixel, so retina screens stay fast
+        devicePixelRatio: Math.min(window.devicePixelRatio || 1, 1.5),
+      };
+      var script = document.createElement("script");
+      script.src = buildUrl + "/{{{ LOADER_FILENAME }}}";
+      script.onload = function () {
+        createUnityInstance(canvas, config, function (progress) {
+          document.querySelector("#fill").style.width = 100 * progress + "%";
+        }).then(function () {
+          document.querySelector("#loading").style.display = "none";
+        }).catch(function (message) { alert(message); });
+      };
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>

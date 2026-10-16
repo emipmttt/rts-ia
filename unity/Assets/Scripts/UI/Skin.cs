@@ -1,9 +1,10 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// IMGUI skin made from the Tiny Swords UI pieces, mirroring client/src/style.css: blue/red 9-slice
-// buttons, paper and wooden panels, coloured ribbons. 9-slice textures are resampled so their
-// borders come out at the CSS sizes.
+// IMGUI skin made from the game's own pixel-art UI pieces (painted by unity/Tools/gen-art.py): blue
+// and red 9-slice buttons, parchment and wooden panels, ribbons in every team colour. The pieces are
+// tiny; they are scaled up by a whole factor with nearest-neighbour so every art pixel stays a crisp
+// square block.
 namespace RTS.UI
 {
     public static class Skin
@@ -13,24 +14,26 @@ namespace RTS.UI
         static bool ready;
         public static float Scale = 1;
 
-        // Resamples a 9-slice texture so `slice` texture px become `border` screen px
-        static Texture2D Resample(Texture2D src, float k)
+        // Scales pixel art up by the whole factor k (nearest-neighbour): each art pixel a k x k block
+        static Texture2D Resample(Texture2D src, int k)
         {
-            int w = Mathf.Max(1, Mathf.RoundToInt(src.width * k)), h = Mathf.Max(1, Mathf.RoundToInt(src.height * k));
-            var dst = new Texture2D(w, h, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            int w = src.width * k, h = src.height * k;
+            var dst = new Texture2D(w, h, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
+            var sp = src.GetPixels();
             var px = new Color[w * h];
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
-                    px[y * w + x] = src.GetPixelBilinear((x + 0.5f) / w, (y + 0.5f) / h);
+                    px[y * w + x] = sp[(y / k) * src.width + x / k];
             dst.SetPixels(px);
             dst.Apply();
             return dst;
         }
 
-        static GUIStyle NineSlice(string name, int slice, int border, int padding, Color text, int fontSize)
+        // `slice`: art pixels of the piece's border; `k`: screen pixels per art pixel
+        static GUIStyle NineSlice(string name, int slice, int k, int padding, Color text, int fontSize)
         {
-            float k = border / (float)slice;
             var tex = Resample(GameAssets.UI(name), k);
+            int border = slice * k;
             var s = new GUIStyle
             {
                 border = new RectOffset(border, border, border, border),
@@ -47,8 +50,8 @@ namespace RTS.UI
 
         static GUIStyle ButtonStyle(string color)
         {
-            var s = NineSlice($"btn_{color}_9", 64, 14, 6, Color.white, 15);
-            var pressed = NineSlice($"btn_{color}_pressed_9", 64, 14, 6, Color.white, 15);
+            var s = NineSlice($"btn_{color}_9", 5, 3, 6, Color.white, 15);
+            var pressed = NineSlice($"btn_{color}_pressed_9", 5, 3, 6, Color.white, 15);
             s.active.background = pressed.normal.background;
             s.active.textColor = Color.white;
             s.hover.background = s.normal.background;
@@ -65,14 +68,14 @@ namespace RTS.UI
             ready = true;
             Button = ButtonStyle("blue");
             RedButton = ButtonStyle("red");
-            Paper = NineSlice("paper_9", 64, 28, 18, new Color(0.24f, 0.16f, 0.08f), 15);
+            Paper = NineSlice("paper_9", 8, 3, 20, new Color(0.24f, 0.16f, 0.08f), 15);
             Paper.alignment = TextAnchor.UpperLeft;
-            Wood = NineSlice("woodtable_9", 128, 30, 14, Color.white, 14);
+            Wood = NineSlice("woodtable_9", 8, 3, 16, Color.white, 14);
             Wood.alignment = TextAnchor.UpperLeft;
             Slot = SlotStyle();
             Panel = new GUIStyle { border = new RectOffset(6, 6, 6, 6), padding = new RectOffset(10, 10, 8, 8) };
             Panel.normal.background = PanelTexture();
-            Tooltip = NineSlice("paper_9", 64, 14, 10, new Color(0.24f, 0.16f, 0.08f), 13);
+            Tooltip = NineSlice("paper_9", 8, 2, 14, new Color(0.24f, 0.16f, 0.08f), 13);
             Tooltip.alignment = TextAnchor.UpperLeft;
             Tooltip.fontStyle = FontStyle.Normal;
 
@@ -141,16 +144,19 @@ namespace RTS.UI
             return t;
         }
 
+        // A banner in a team colour; `ends`: about how wide its folded tails are on screen
         public static GUIStyle Ribbon(string color, int ends = 60)
         {
             var key = color + ends;
             if (ribbons.TryGetValue(key, out var s)) return s;
-            float k = ends / 128f;
+            const int ArtEnds = 10; // art pixels of each tail in ribbon_*.png
+            int k = Mathf.Max(1, Mathf.RoundToInt(ends / (float)ArtEnds));
             var tex = Resample(GameAssets.UI($"ribbon_{color}"), k);
+            int border = ArtEnds * k;
             s = new GUIStyle
             {
-                border = new RectOffset(ends, ends, 0, 0),
-                padding = new RectOffset(ends - 10, ends - 10, 4, 10),
+                border = new RectOffset(border, border, 0, 0),
+                padding = new RectOffset(border - 6, border - 6, 2, 6),
                 alignment = TextAnchor.MiddleCenter,
                 fontSize = 20,
                 fontStyle = FontStyle.Bold,

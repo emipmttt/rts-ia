@@ -85,6 +85,14 @@ namespace RTS.Game
                 if (s.s.type == "archer" && IsFire(s.s.owner)) MageFire(s);
             }
 
+            // Queued orders even when the unit is off screen or the trail runs into the fog
+            foreach (var id in selected)
+            {
+                if (!sprites.TryGetValue(id, out var q) || q.s.owner != myId) continue;
+                if (!q.isBuilding && q.s.orders != null) DrawQueuedOrders(q);
+                if (q.isBuilding && q.s.rally != null) DrawRally(q);
+            }
+
             PushGrass(dt);
 
             if (territory.Due)
@@ -95,7 +103,7 @@ namespace RTS.Game
                 territory.Update(things, ColorOf, fog);
             }
 
-            hovered = placing != null || dragStart != null || PointerOverUI ? null : PickAt(Input.mousePosition);
+            hovered = placing != null || dragStart != null || PointerOverUI ? null : PickAt(Input.mousePosition, selected.Count > 0);
             DrawOverlay();
         }
 
@@ -279,8 +287,9 @@ namespace RTS.Game
             {
                 // A model rises out of the ground as it is built, darker until finished; bounces when it
                 // changes age
-                float grow = AgeAnimScale(s);
-                s.model.transform.localScale = new Vector3(grow, (e.built ? 1 : 0.12f + 0.88f * e.buildProgress) * grow, grow);
+                UpdateAgeAnim(s);
+                var grow = AgeAnimScale(s);
+                s.model.transform.localScale = new Vector3(grow.x, (e.built ? 1 : 0.12f + 0.88f * e.buildProgress) * grow.y, grow.x);
                 var c = tint;
                 if (!e.built) c = c * 0.75f;
                 c.a = 1;
@@ -329,7 +338,7 @@ namespace RTS.Game
             }
             var stats = s.stats;
             if (stats.attack != null && e.built && (isSelected || hovered?.id == e.id && hovered?.kind == PickKind.Entity))
-                overlay.GroundRing(e.x, e.y, stats.attack.range, stats.attack.range, 2.5f * RingZoom, GameAssets.Hex(ColorOf(e.owner), 0.6f));
+                overlay.GroundRing(e.x, e.y, RangeOf(e), RangeOf(e), 2.5f * RingZoom, GameAssets.Hex(ColorOf(e.owner), 0.6f));
             DrawFlag(s);
         }
 
@@ -487,7 +496,6 @@ namespace RTS.Game
             s.billboard.localPosition = Vector3.up * s.alt * C.PxToUnit;
 
             if (isSelected) overlay.GroundRing(s.gx, s.gy, r + 6, r + 6, 2.4f * RingZoom, SelectColor);
-            if (isSelected && e.owner == myId && e.orders != null) DrawQueuedOrders(s);
             if (e.action == "healing" && e.targetId != null && sprites.TryGetValue(e.targetId.Value, out var patient))
             {
                 float pulse = 0.4f + 0.3f * Mathf.Sin(Time.time * 1000 / 120);
@@ -505,7 +513,7 @@ namespace RTS.Game
         // small flag-like marker on each
         void DrawQueuedOrders(EntityView s)
         {
-            var color = new Color(1f, 0.92f, 0.6f, 0.75f);
+            var color = new Color(1f, 0.92f, 0.6f, 0.85f);
             var from = new Vector2(s.gx, s.gy);
             foreach (var to in s.s.orders)
             {
@@ -513,10 +521,37 @@ namespace RTS.Game
                 for (float d = 10; d < len; d += 14)
                 {
                     var p = Vector2.Lerp(from, to, d / len);
-                    overlay.GroundRect(p.x - 1.5f * RingZoom, p.y - 1.5f * RingZoom, 3 * RingZoom, 3 * RingZoom, color, 0.05f);
+                    ordersBatch.GroundRect(p.x - 1.5f * RingZoom, p.y - 1.5f * RingZoom, 3 * RingZoom, 3 * RingZoom, color, 0.05f);
                 }
-                overlay.GroundRing(to.x, to.y, 7, 7, 2 * RingZoom, color);
+                ordersBatch.GroundRing(to.x, to.y, 7, 7, 2 * RingZoom, color);
                 from = to;
+            }
+        }
+
+        // A selected building's rally point: a dotted trail from its door to a flag in the player's colour
+        void DrawRally(EntityView s)
+        {
+            var to = s.s.rally.Value;
+            var color = GameAssets.Hex(ColorOf(myId));
+            var trail = new Color(color.r, color.g, color.b, 0.8f);
+            var from = new Vector2(s.s.x, s.s.y);
+            float len = Vector2.Distance(from, to);
+            for (float d = Defs.BuildingSize(s.s.type) / 2; d < len - 6; d += 14)
+            {
+                var p = Vector2.Lerp(from, to, d / len);
+                ordersBatch.GroundRect(p.x - 1.5f * RingZoom, p.y - 1.5f * RingZoom, 3 * RingZoom, 3 * RingZoom, trail, 0.05f);
+            }
+            ordersBatch.GroundRing(to.x, to.y, 8, 8, 2 * RingZoom, trail);
+            // Pole and a waving pennant
+            var foot = ground.ToWorld(to.x, to.y);
+            var top = foot + Vector3.up * 1.3f;
+            ordersBatch.Line(foot, top, 0.06f, new Color(0.35f, 0.22f, 0.1f));
+            float wave = Mathf.Sin(Time.time * 6) * 0.05f;
+            for (int i = 0; i < 6; i++)
+            {
+                float y = 0.04f + i * 0.06f, w = 0.55f * (1 - Mathf.Abs(i - 2.5f) / 3.5f);
+                var a = top - Vector3.up * y;
+                ordersBatch.Line(a, a + camRight * w + Vector3.up * wave * (w / 0.55f), 0.065f, color);
             }
         }
 
@@ -782,13 +817,16 @@ namespace RTS.Game
                 var start = wallStart ?? end;
                 var ok = new HashSet<(int, int)>(WallTiles(start, end));
                 var line = Defs.WallLine(start.x, start.y, end.x, end.y);
+                bool inFog = WallInFog(start, end);
                 int affordable = Defs.Entity["wall"].cost.TryGetValue("stone", out var per) && per > 0 ? (stock.TryGetValue("stone", out var have) ? have : 0) / per : 999;
                 int n = 0;
                 foreach (var c in line)
                 {
-                    bool good = ok.Contains(c) && n < affordable;
+                    bool good = ok.Contains(c) && n < affordable && !inFog;
                     if (ok.Contains(c)) n++;
-                    foreach (var (fx, fy) in Defs.Footprint("wall", c.x, c.y))
+                    // A piece against a tree, mine, water or building only takes the free tiles of its cell
+                    var cells = Defs.WallCells(c.x, c.y, IsWallBlocked, mapTiles);
+                    foreach (var (fx, fy) in cells.Count > 0 ? (IEnumerable<(int x, int y)>)cells : Defs.Footprint("wall", c.x, c.y))
                         overlay.GroundTile(fx, fy, good ? new Color(0.3f, 0.69f, 0.31f, 0.45f) : new Color(0.9f, 0.22f, 0.21f, 0.45f));
                 }
                 ghost.gameObject.SetActive(false);
@@ -798,11 +836,11 @@ namespace RTS.Game
             if (placing != null)
             {
                 var (tx, ty) = GhostTile();
-                bool valid = CanPlaceHere(placing, tx, ty) && Defs.CanAfford(stock, Defs.Entity[placing].cost) && FootprintExplored(placing, tx, ty);
+                bool valid = CanPlaceHere(placing, tx, ty) && Defs.CanAfford(stock, Defs.Entity[placing].cost) && FootprintInSight(placing, tx, ty);
                 var tint = valid ? GameAssets.Hex(0x4caf50) : GameAssets.Hex(0xe53935);
                 foreach (var (x, y) in Defs.Footprint(placing, tx, ty))
                 {
-                    bool blocked = x < 0 || y < 0 || x >= mapTiles || y >= mapTiles || (IsTileBlocked(x, y) && !(placing == "gate" && OwnWallAt(x, y))) || !fog.ExploredTile(x, y);
+                    bool blocked = x < 0 || y < 0 || x >= mapTiles || y >= mapTiles || (IsTileBlocked(x, y) && !(placing == "gate" && OwnWallTile(x, y))) || !fog.VisibleTile(x, y);
                     var c = blocked ? GameAssets.Hex(0xe53935) : tint;
                     c.a = 0.4f;
                     overlay.GroundTile(x, y, c);
@@ -880,11 +918,26 @@ namespace RTS.Game
             int t = ground.TileAt(x, y);
             if (t == Terrain.Water || t == Terrain.Bridge) return true;
             foreach (var s in sprites.Values)
-            {
-                if (!s.isBuilding) continue;
-                int n = s.stats.tiles;
-                if (x >= s.s.tx && x < s.s.tx + n && y >= s.s.ty && y < s.s.ty + n) return true;
-            }
+                if (s.isBuilding && Occupies(s, x, y)) return true;
+            return false;
+        }
+
+        // The building stands on tile (x, y) (a partial wall piece only on part of its cell)
+        static bool Occupies(EntityView s, int x, int y)
+        {
+            int n = s.stats.tiles, i = x - s.s.tx, j = y - s.s.ty;
+            if (i < 0 || j < 0 || i >= n || j >= n) return false;
+            return s.s.cells == 0 || (s.s.cells & (1 << (j * n + i))) != 0;
+        }
+
+        // Tiles a wall piece can't take: buildings, trees, mines, water, bridges (bushes are fine)
+        bool IsWallBlocked(int x, int y)
+        {
+            if (resourceAt.TryGetValue(TileKey(x, y), out var rid) && resources.TryGetValue(rid, out var r) && r.r.variant != "bush") return true;
+            int t = ground.TileAt(x, y);
+            if (t == Terrain.Water || t == Terrain.Bridge) return true;
+            foreach (var s in sprites.Values)
+                if (s.isBuilding && Occupies(s, x, y)) return true;
             return false;
         }
 

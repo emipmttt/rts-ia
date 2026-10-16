@@ -161,37 +161,26 @@ Shader "RTS/Terrain"
             ENDHLSL
         }
 
-        // Outline of the models (team-coloured buildings): the mesh pushed out along its smoothed normals
-        // (UV channel 3, so the shell has no gaps at the corners) by a fixed number of screen pixels
-        // whatever the zoom, and drawn from the inside so only a rim shows around it. Collapsed unless
-        // outlines are on and the material has a colour
+        // Outline mask (Core/Outlines.cs): the model's silhouette in its outline colour, where it is
+        // visible (depth-tested against the scene); nothing unless outlines are on and it has a colour
         Pass
         {
-            Name "Outline"
-            Tags { "LightMode"="SRPDefaultUnlit" }
-            Cull Front
+            Name "OutlineMask"
+            Tags { "LightMode"="OutlineMask" }
+            ZWrite Off ZTest LEqual
+            Offset -1, -1
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_fog
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "FogOfWar.hlsl"
-            struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; float3 smoothOS : TEXCOORD3; };
+            struct Attributes { float4 positionOS : POSITION; };
             struct Varyings { float4 positionCS : SV_POSITION; float3 positionWS : TEXCOORD0; half fog : TEXCOORD1; };
-            #define OUTLINE_PX 3.5
             Varyings vert (Attributes v)
             {
                 Varyings o;
-                float3 nOS = dot(v.smoothOS, v.smoothOS) > 0.01 ? v.smoothOS : v.normalOS;
-                float3 nWS = TransformObjectToWorldNormal(nOS);
-                float3 p = TransformObjectToWorld(v.positionOS.xyz) + nWS * 0.02;
-                float4 cs = TransformWorldToHClip(p);
-                // Then out by OUTLINE_PX on screen, along the normal's direction on screen
-                float2 dir = mul((float3x3)UNITY_MATRIX_VP, nWS).xy;
-                float len = length(dir);
-                if (len > 1e-4) cs.xy += dir / len * (OUTLINE_PX * 2 / _ScreenParams.xy) * cs.w;
-                o.positionWS = p;
-                o.positionCS = _OutlinesOn > 0.5 && _OutlineColor.a > 0 ? cs : float4(0, 0, 0, 1);
+                o.positionWS = TransformObjectToWorld(v.positionOS.xyz);
+                o.positionCS = _OutlinesOn > 0.5 && _OutlineColor.a > 0 ? TransformWorldToHClip(o.positionWS) : float4(0, 0, 0, 1);
                 o.fog = ComputeFogFactor(o.positionCS.z);
                 return o;
             }

@@ -66,14 +66,14 @@ namespace RTS.Game
         // of the map (sheep, trees, mines), then buildings, which only count where the pointer touches
         // their model; a building wins over a small thing only when it is clearly in front of it
 
-        int? UnitAt(Ray ray)
+        int? UnitAt(Ray ray, bool enemiesOnly = false)
         {
             int? best = null;
             float bestScore = float.MaxValue;
             foreach (var kv in sprites)
             {
                 var s = kv.Value;
-                if (s.isBuilding || !s.active) continue;
+                if (s.isBuilding || !s.active || enemiesOnly && Allied(s.s.owner)) continue;
                 // A generous target that grows as the camera pulls away, so small units stay easy to click
                 float r = (s.stats.radius + 14) * C.PxToUnit * Mathf.Clamp(rts.Distance / 20f, 1, 2.2f);
                 float height = s.s.type == "guard" ? 1.8f : 1.6f;
@@ -111,7 +111,24 @@ namespace RTS.Game
         int? EntityAt(Vector2 screen)
         {
             var ray = rts.cam.ScreenPointToRay(screen);
-            return UnitAt(ray) ?? BuildingAt(ray).id;
+            return UnitAt(ray) ?? BuildingAt(ray).id ?? BuildingOnGround(screen);
+        }
+
+        // The building whose footprint is under the pointer on the ground: a farm's crop fields, the
+        // ground around a thin model, the base of a wall
+        int? BuildingOnGround(Vector2 screen)
+        {
+            if (!rts.GroundPoint(screen, out var p)) return null;
+            var sp = Ground.ToServer(p);
+            foreach (var kv in sprites)
+            {
+                var s = kv.Value;
+                if (!s.isBuilding || !s.active) continue;
+                float size = Defs.BuildingSize(s.s.type);
+                float x0 = s.s.tx * C.TileSize, y0 = s.s.ty * C.TileSize;
+                if (sp.x >= x0 && sp.y >= y0 && sp.x < x0 + size && sp.y < y0 + size) return kv.Key;
+            }
+            return null;
         }
 
         // The resource under the pointer (sheep by their body, trees by their canopy, mines by their
@@ -156,39 +173,49 @@ namespace RTS.Game
         {
             var (id, _) = ResourceAt(rts.cam.ScreenPointToRay(screen));
             if (id != null) return id;
-            if (rts.GroundPoint(screen, out var p))
-            {
-                var sp = Ground.ToServer(p);
-                if (resourceAt.TryGetValue(TileKey(Mathf.FloorToInt(sp.x / C.TileSize), Mathf.FloorToInt(sp.y / C.TileSize)), out var tid) && resources[tid].active) return tid;
-            }
-            return null;
+            if (!rts.GroundPoint(screen, out var p)) return null;
+            // The ground at the foot of a tree or a mine counts too: the closest one within most of a
+            // tile of the pointer
+            var sp = Ground.ToServer(p);
+            int cx = Mathf.FloorToInt(sp.x / C.TileSize), cy = Mathf.FloorToInt(sp.y / C.TileSize);
+            int? best = null;
+            float bestD = C.TileSize * 0.85f;
+            for (int ty = cy - 1; ty <= cy + 1; ty++)
+                for (int tx = cx - 1; tx <= cx + 1; tx++)
+                {
+                    if (!resourceAt.TryGetValue(TileKey(tx, ty), out var tid) || !resources[tid].active) continue;
+                    float d = Vector2.Distance(sp, new Vector2((tx + 0.5f) * C.TileSize, (ty + 0.5f) * C.TileSize));
+                    if (d < bestD) { best = tid; bestD = d; }
+                }
+            return best;
         }
 
-        Pick PickAt(Vector2 screen)
+        // `forOrder`: what a right click acts on. Our own and allied units are skipped there (an order
+        // on them is just a move), so villagers crowding a farm, a tree or a mine don't get in the way
+        Pick PickAt(Vector2 screen, bool forOrder = false)
         {
             var ray = rts.cam.ScreenPointToRay(screen);
-            var unit = UnitAt(ray);
+            var unit = UnitAt(ray, forOrder);
             if (unit != null) return new Pick { kind = PickKind.Entity, id = unit.Value };
             var (res, resDist) = ResourceAt(ray);
             var (building, buildingDist) = BuildingAt(ray);
             if (res != null && (building == null || resDist <= buildingDist + 1.5f)) return new Pick { kind = PickKind.Resource, id = res.Value };
             if (building != null) return new Pick { kind = PickKind.Entity, id = building.Value };
             var tile = ResourceAtPoint(screen);
-            return tile != null ? new Pick { kind = PickKind.Resource, id = tile.Value } : null;
+            if (tile != null) return new Pick { kind = PickKind.Resource, id = tile.Value };
+            var under = BuildingOnGround(screen);
+            return under != null ? new Pick { kind = PickKind.Entity, id = under.Value } : null;
         }
 
         (int, int) GhostTile()
         {
             if (!rts.GroundPoint(Input.mousePosition, out var p)) return (-100, -100);
             var sp = Ground.ToServer(p);
-            var tile = Defs.TileForCenter(placing, sp.x, sp.y);
-            // A gate snaps onto the wall piece under the pointer, to take its place
-            if (placing == "gate")
-            {
-                var w = OwnWallCovering(Mathf.FloorToInt(sp.x / C.TileSize), Mathf.FloorToInt(sp.y / C.TileSize));
-                if (w != null) return (w.s.tx, w.s.ty);
-            }
-            return tile;
+            // Walls and gates snap to the wall grid: the cell under the pointer (a gate there takes the
+            // place of our wall piece)
+            if (placing == "wall" || placing == "gate")
+                return (Defs.SnapWall(Mathf.FloorToInt(sp.x / C.TileSize)), Defs.SnapWall(Mathf.FloorToInt(sp.y / C.TileSize)));
+            return Defs.TileForCenter(placing, sp.x, sp.y);
         }
 
         // ---------- Input ----------
@@ -276,12 +303,19 @@ namespace RTS.Game
 
         // Tiles of the wall being dragged that can take a piece
         List<(int x, int y)> WallTiles((int x, int y) a, (int x, int y) b) =>
-            Defs.WallLine(a.x, a.y, b.x, b.y).Where(c => Defs.CanPlace("wall", c.x, c.y, IsTileBlocked, mapTiles) && fog.ExploredTile(c.x, c.y)).ToList();
+            Defs.WallLine(a.x, a.y, b.x, b.y).Where(c => WallPieceFits(c.x, c.y) && FootprintInSight("wall", c.x, c.y)).ToList();
+
+        bool WallPieceFits(int tx, int ty) => Defs.WallCells(tx, ty, IsWallBlocked, mapTiles).Count > 0;
+
+        // Wall pieces of the line that would go up in the fog (the server builds the whole line)
+        bool WallInFog((int x, int y) a, (int x, int y) b) =>
+            Defs.WallLine(a.x, a.y, b.x, b.y).Any(c => WallPieceFits(c.x, c.y) && !FootprintInSight("wall", c.x, c.y));
 
         void PlaceWall((int x, int y) a, (int x, int y) b)
         {
             var cost = Defs.Entity["wall"].cost;
             if (!Defs.CanAfford(stock, cost)) { ShowMessage("Recursos insuficientes"); return; }
+            if (WallInFog(a, b)) { ShowMessage("No puedes construir en la niebla"); return; }
             if (WallTiles(a, b).Count == 0) { ShowMessage("No se puede construir ahí"); return; }
             var unitIds = SelectedUnitIds().Where(id => sprites[id].s.type == "villager").ToList();
             socket.Emit("game:wall", new { tx0 = a.x, ty0 = a.y, tx1 = b.x, ty1 = b.y, unitIds, queue = Shift });
@@ -289,8 +323,7 @@ namespace RTS.Game
             if (!Shift) placing = null;
         }
 
-        // A gate may replace one of our own wall pieces (2x2: any of its tiles)
-        bool OwnWallAt(int x, int y) => OwnWallCovering(x, y) != null;
+        // Our own wall piece whose cell holds tile (x, y)
         EntityView OwnWallCovering(int x, int y)
         {
             for (int j = 0; j < Defs.WallStep; j++)
@@ -299,8 +332,16 @@ namespace RTS.Game
             return null;
         }
 
+        // A tile of one of our own wall pieces (a gate can go there in its place)
+        bool OwnWallTile(int x, int y)
+        {
+            var w = OwnWallCovering(x, y);
+            return w != null && Occupies(w, x, y);
+        }
+
+        // A gate needs its whole cell: free tiles or our own wall piece's (not one built against a tree)
         bool CanPlaceHere(string type, int tx, int ty) =>
-            type == "gate" && OwnWallAt(tx, ty) || Defs.CanPlace(type, tx, ty, IsTileBlocked, mapTiles);
+            Defs.CanPlace(type, tx, ty, type == "gate" ? (x, y) => IsTileBlocked(x, y) && !OwnWallTile(x, y) : IsTileBlocked, mapTiles);
 
         void PlaceBuilding()
         {
@@ -308,7 +349,7 @@ namespace RTS.Game
             var stats = Defs.Entity[placing];
             if (!Defs.CanAfford(stock, stats.cost)) { ShowMessage("Recursos insuficientes"); return; }
             if (!CanPlaceHere(placing, tx, ty)) { ShowMessage("No se puede construir ahí"); return; }
-            if (!FootprintExplored(placing, tx, ty)) { ShowMessage("No puedes construir en zona sin explorar"); return; }
+            if (!FootprintInSight(placing, tx, ty)) { ShowMessage("No puedes construir en la niebla"); return; }
             // Selected villagers go build it; the server picks the closest villager when none are selected
             var unitIds = SelectedUnitIds().Where(id => sprites[id].s.type == "villager").ToList();
             // With Shift the villagers queue it after what they are doing and placing goes on
@@ -363,9 +404,13 @@ namespace RTS.Game
         void Command(Vector2 screen)
         {
             var unitIds = SelectedUnitIds();
-            if (unitIds.Count == 0) return;
             if (!rts.GroundPoint(screen, out var p)) return;
             var world = Ground.ToServer(p);
+            if (unitIds.Count == 0)
+            {
+                SetRally(world, PickAt(screen, true));
+                return;
+            }
             var order = SendOrder(unitIds, screen, world);
             markers.Add(new Marker { x = world.x, y = world.y, color = MarkerColors[order] });
         }
@@ -373,7 +418,7 @@ namespace RTS.Game
         // Right click order; with Shift held it is queued after what the units are doing (AoE waypoints)
         string SendOrder(List<int> unitIds, Vector2 screen, Vector2 world)
         {
-            var target = PickAt(screen);
+            var target = PickAt(screen, true);
             if (target?.kind == PickKind.Resource)
             {
                 socket.Emit("game:gather", new { unitIds, resourceId = target.id, queue = Shift });
@@ -399,6 +444,28 @@ namespace RTS.Game
             }
             socket.Emit("game:move", new { unitIds, x = world.x, y = world.y, queue = Shift });
             return "move";
+        }
+
+        // Our selected buildings that train units
+        List<int> RallyBuildings() => selected.Where(id => sprites.TryGetValue(id, out var s) && s.isBuilding && s.s.owner == myId && s.s.built && s.stats.trains != null).ToList();
+
+        // Right click with buildings selected: their rally point. On a resource or one of our farms new
+        // villagers go straight to work there; on the building itself the flag is taken down
+        void SetRally(Vector2 world, Pick target)
+        {
+            var buildingIds = RallyBuildings();
+            if (buildingIds.Count == 0) return;
+            int? resourceId = target?.kind == PickKind.Resource ? target.id : (int?)null;
+            int? buildingId = target?.kind == PickKind.Entity && sprites.TryGetValue(target.id, out var b) && b.isBuilding ? target.id : (int?)null;
+            if (resourceId != null && resources.TryGetValue(resourceId.Value, out var res)) world = new Vector2(res.gx, res.gy);
+            socket.Emit("game:rally", new { buildingIds, x = world.x, y = world.y, resourceId, buildingId });
+            if (buildingId != null && buildingIds.Contains(buildingId.Value))
+            {
+                ShowMessage("Punto de reunión quitado", true);
+                return;
+            }
+            markers.Add(new Marker { x = world.x, y = world.y, color = MarkerColors[resourceId != null ? "gather" : "move"] });
+            Sfx.Play("click");
         }
 
         // My villagers with no job (a plain move order that has finished counts as idle)

@@ -102,9 +102,16 @@ export function clearLine(blocked, x0, y0, x1, y1, r, ignore = -1) {
   const N = Math.sqrt(blocked.length);
   const dist = Math.hypot(x1 - x0, y1 - y0);
   const steps = Math.max(1, Math.ceil(dist / (TILE_SIZE / 4)));
+  let px = Math.floor(x0 / TILE_SIZE), py = Math.floor(y0 / TILE_SIZE);
   for (let s = 0; s <= steps; s++) {
     const x = x0 + ((x1 - x0) * s) / steps;
     const y = y0 + ((y1 - y0) * s) / steps;
+    // Never slip diagonally between two tiles that only touch at a corner (wall pieces in a diagonal
+    // line, a wall against a tree): the same rule as findPath's corner cutting
+    const cx = Math.floor(x / TILE_SIZE), cy = Math.floor(y / TILE_SIZE);
+    if (cx !== px && cy !== py && cx >= 0 && cy >= 0 && px >= 0 && py >= 0 && cx < N && cy < N && px < N && py < N
+      && ((blocked[py * N + cx] && py * N + cx !== ignore) || (blocked[cy * N + px] && cy * N + px !== ignore))) return false;
+    px = cx; py = cy;
     for (const [ox, oy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) {
       const tx = Math.floor((x + ox) / TILE_SIZE);
       const ty = Math.floor((y + oy) / TILE_SIZE);

@@ -93,8 +93,8 @@ namespace RTS
             ["villager"] = new Stats { kind = "unit", name = "Aldeano", radius = 10, speed = 78, hp = 25, carryCapacity = 10, cost = new Cost(("food", 50)), trainTime = 10, attack = new AttackStats { damage = 3, range = 0, cooldown = 1.5f } },
             ["swordsman"] = new Stats { kind = "unit", name = "Espadachín", radius = 11, speed = 70, hp = 60, cost = new Cost(("food", 60), ("gold", 20)), trainTime = 12, attack = new AttackStats { damage = 9, range = 0, cooldown = 1 }, aggroRange = 180 },
             ["spearman"] = new Stats { kind = "unit", name = "Lancero", radius = 11, speed = 66, hp = 70, cost = new Cost(("food", 35), ("wood", 25)), trainTime = 11, shield = 0.6f, attack = new AttackStats { damage = 6, range = 0, cooldown = 1.25f, vsFast = 4 }, aggroRange = 190 },
-            ["archer"] = new Stats { kind = "unit", name = "Místico del viento", radius = 10, speed = 74, hp = 35, cost = new Cost(("food", 40), ("gold", 45)), trainTime = 15, age = 2, attack = new AttackStats { damage = 5.8f, range = 160, cooldown = 1.4f }, aggroRange = 220 },
-            ["bowman"] = new Stats { kind = "unit", name = "Arquero", radius = 10, speed = 74, hp = 35, cost = new Cost(("food", 30), ("wood", 40)), trainTime = 12, attack = new AttackStats { damage = 4.6f, range = 175, cooldown = 1.5f }, aggroRange = 235 },
+            ["archer"] = new Stats { kind = "unit", name = "Místico del viento", radius = 10, speed = 74, hp = 35, cost = new Cost(("food", 40), ("gold", 45)), trainTime = 15, age = 2, attack = new AttackStats { damage = 5.8f, range = 230, cooldown = 1.4f }, aggroRange = 290 },
+            ["bowman"] = new Stats { kind = "unit", name = "Arquero", radius = 10, speed = 74, hp = 35, cost = new Cost(("food", 30), ("wood", 40)), trainTime = 12, attack = new AttackStats { damage = 4.6f, range = 250, cooldown = 1.5f }, aggroRange = 310 },
             ["horseman"] = new Stats { kind = "unit", name = "Volador", radius = 13, speed = 117, hp = 100, cost = new Cost(("food", 80), ("gold", 60)), trainTime = 18, age = 2, attack = new AttackStats { damage = 8, range = 0, cooldown = 1.6f, area = 60, knockback = 480, stun = 1 }, aggroRange = 200 },
             ["monk"] = new Stats { kind = "unit", name = "Monje", radius = 10, speed = 62, hp = 30, cost = new Cost(("gold", 80)), trainTime = 16, age = 2, heal = new HealStats { amount = 4, range = 90, cooldown = 1, searchRange = 260 } },
             ["guard"] = new Stats { kind = "unit", name = "Caballero guardián", radius = 13, speed = 109, hp = 220, attack = new AttackStats { damage = 14, range = 0, cooldown = 1.1f }, aggroRange = 260 },
@@ -106,19 +106,19 @@ namespace RTS
             ["fire"] = new Dictionary<string, Stats>
             {
                 ["horseman"] = Entity["horseman"].With("Volador de fuego", new AttackStats { damage = 8, range = 0, cooldown = 2.4f, area = 60, knockback = 480, burn = true }),
-                ["archer"] = Entity["archer"].With("Mago de fuego", new AttackStats { damage = 6.2f, range = 160, cooldown = 2, burn = true }),
+                ["archer"] = Entity["archer"].With("Mago de fuego", new AttackStats { damage = 6.2f, range = 230, cooldown = 2, burn = true }),
                 ["swordsman"] = Entity["swordsman"].With("Espadachín de fuego", new AttackStats { damage = 10, range = 0, cooldown = 1.15f }),
             },
             ["earth"] = new Dictionary<string, Stats>
             {
                 ["horseman"] = Entity["horseman"].With("Surfista de roca", new AttackStats { damage = 11, range = 0, cooldown = 2, area = 55, knockback = 320 }, 129),
-                ["archer"] = Entity["archer"].With("Geomante", new AttackStats { damage = 7.2f, range = 160, cooldown = 2.2f, line = 16, vsBuildings = 3 }),
+                ["archer"] = Entity["archer"].With("Geomante", new AttackStats { damage = 7.2f, range = 230, cooldown = 2.2f, line = 16, vsBuildings = 3 }),
                 ["swordsman"] = Entity["swordsman"].With("Guerrero de tierra", new AttackStats { damage = 12, range = 0, cooldown = 1.3f }, 64),
             },
             ["water"] = new Dictionary<string, Stats>
             {
                 ["horseman"] = Entity["horseman"].With("Surfista de hielo", new AttackStats { damage = 7.5f, range = 0, cooldown = 1.8f, area = 60, knockback = 260, chill = 0.82f }, 133),
-                ["archer"] = Entity["archer"].With("Hidromante", new AttackStats { damage = 4.8f, range = 160, cooldown = 1.3f, chill = 0.88f }),
+                ["archer"] = Entity["archer"].With("Hidromante", new AttackStats { damage = 4.8f, range = 230, cooldown = 1.3f, chill = 0.88f }),
                 ["swordsman"] = Entity["swordsman"].With("Guerrero de agua", new AttackStats { damage = 8, range = 0, cooldown = 0.85f }, 74),
             },
         };
@@ -144,11 +144,20 @@ namespace RTS
 
         public const int WallStep = 2; // wall pieces are 2x2 tiles
 
+        // Walls and gates sit on a fixed grid of 2x2 cells so pieces always line up (snapWall in shared/rules.js)
+        public static int SnapWall(int v) => (int)System.Math.Floor(v / (double)WallStep) * WallStep;
+
+        // Tiles a wall piece takes: the free ones of its cell; it fills round trees, mines, water and
+        // buildings (wallCells in shared/rules.js)
+        public static List<(int x, int y)> WallCells(int tx, int ty, System.Func<int, int, bool> isWallBlocked, int mapTiles) =>
+            Footprint("wall", tx, ty).Where(c => c.x >= 0 && c.y >= 0 && c.x < mapTiles && c.y < mapTiles && !isWallBlocked(c.x, c.y)).ToList();
+
         // Top-left tiles of the pieces of a wall dragged between two tiles: an 8-connected line of
         // 2x2 pieces (wallLine in shared/rules.js)
         static int JsRound(double v) => (int)System.Math.Floor(v + 0.5);
         public static List<(int x, int y)> WallLine(int x0, int y0, int x1, int y1, int max = 20)
         {
+            x0 = SnapWall(x0); y0 = SnapWall(y0); x1 = SnapWall(x1); y1 = SnapWall(y1);
             var cells = new List<(int, int)>();
             int ex = JsRound((x1 - x0) / (double)WallStep), ey = JsRound((y1 - y0) / (double)WallStep);
             int n = System.Math.Max(System.Math.Abs(ex), System.Math.Abs(ey));
@@ -179,16 +188,25 @@ namespace RTS
         public static bool IsBuilding(string type) => type != null && Entity.TryGetValue(type, out var s) && s.IsBuilding;
         public static float BuildingSize(string type) => Entity[type].tiles * C.TileSize;
 
+        // Buildings that shoot reach this much further with each age past the first (shared/constants.js)
+        public const float AgeRangeBonus = 45;
+        public static float BuildingRange(string type, int age) => Entity[type].attack.range + AgeRangeBonus * System.Math.Max(0, age - 1);
+
+        // Every building sees this much further with each age past the first
+        public const float AgeSightBonus = 0.15f;
+
         // Line of sight in px for the fog of war (client only): soldiers see a bit past the archers'
-        // range so they spot who shoots them; town centers and towers watch over the base
+        // range so they spot who shoots them; archers see past their own; town centers and towers
+        // watch over the base
         static readonly Dictionary<string, float> Sights = new Dictionary<string, float>
         {
-            ["villager"] = 200, ["swordsman"] = 220, ["archer"] = 260, ["horseman"] = 280, ["monk"] = 240, ["guard"] = 260,
+            ["villager"] = 200, ["swordsman"] = 270, ["spearman"] = 270, ["archer"] = 310, ["bowman"] = 330, ["horseman"] = 300, ["monk"] = 240, ["guard"] = 260,
             ["townCenter"] = 520, ["tower"] = 340, ["house"] = 170, ["farm"] = 150,
             ["wall"] = 80, ["gate"] = 110, ["fortress"] = 440,
         };
         public const float SheepSight = 90;
         public static float Sight(string type) => Sights.TryGetValue(type, out var s) ? s : IsBuilding(type) ? 230 : 200;
+        public static float Sight(string type, int age) => Sight(type) * (IsBuilding(type) ? 1 + AgeSightBonus * System.Math.Max(0, age - 1) : 1);
 
         public static (int tx, int ty) TileForCenter(string type, float x, float y)
         {

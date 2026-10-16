@@ -98,6 +98,7 @@ io.on('connection', (socket) => {
   socket.on('game:research', (order) => lobby.roomOf(socket)?.handleResearch(socket.data.playerId, order ?? {}));
   socket.on('game:attack', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'attack', order ?? {}));
   socket.on('game:wall', (order) => lobby.roomOf(socket)?.order(socket.data.playerId, 'wall', order ?? {}));
+  socket.on('game:rally', (order) => lobby.roomOf(socket)?.handleRally(socket.data.playerId, order ?? {}));
   socket.on('game:ageup', (order) => lobby.roomOf(socket)?.handleAgeUp(socket.data.playerId, order ?? {}));
 
   socket.on('disconnect', () => {
@@ -141,7 +142,7 @@ httpServer.listen(PORT, '0.0.0.0', async () => {
   const publicIp = await publicAddress();
   if (publicIp) ips.add(publicIp);
 
-  console.log(`\nRTS game server running (socket port ${PORT})`);
+  console.log(`\nAge of Elemental Wars server running (socket port ${PORT})`);
   console.log('Open the game in your browser:');
   console.log(`  ➜  http://localhost:${PAGE_PORT}`);
   for (const ip of ips) console.log(`  ➜  http://${ip}:${PAGE_PORT}${ip === publicIp ? '  (public IP)' : ''}`);

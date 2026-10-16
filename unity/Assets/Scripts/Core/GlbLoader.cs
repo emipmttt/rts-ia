@@ -147,7 +147,6 @@ namespace RTS
                     m.triangles = idx;
                     if (attr["NORMAL"] == null) m.RecalculateNormals();
                     if (attr["TEXCOORD_0"] != null) m.RecalculateTangents();
-                    m.SetUVs(3, SmoothNormals(m));
                     m.RecalculateBounds();
                     prims.Add((m, (int?)p["material"] ?? -1));
                 }
@@ -200,28 +199,6 @@ namespace RTS
             var scene = json["scenes"][(int?)json["scene"] ?? 0];
             foreach (var n in (JArray)scene["nodes"]) Walk((int)n, Matrix4x4.identity);
             return model;
-        }
-
-        // The faces are flat-shaded (corners are split per face): normals averaged over every corner at
-        // the same spot, for the outline shell to grow without gaps (stored in UV channel 3)
-        static List<Vector3> SmoothNormals(Mesh m)
-        {
-            var verts = m.vertices;
-            var normals = m.normals;
-            var sums = new Dictionary<Vector3Int, Vector3>();
-            Vector3Int Key(Vector3 v) => new Vector3Int(Mathf.RoundToInt(v.x * 1000), Mathf.RoundToInt(v.y * 1000), Mathf.RoundToInt(v.z * 1000));
-            for (int i = 0; i < verts.Length; i++)
-            {
-                var k = Key(verts[i]);
-                sums[k] = (sums.TryGetValue(k, out var s) ? s : Vector3.zero) + normals[i];
-            }
-            var result = new List<Vector3>(verts.Length);
-            for (int i = 0; i < verts.Length; i++)
-            {
-                var n = sums[Key(verts[i])];
-                result.Add(n.sqrMagnitude > 1e-6f ? n.normalized : normals[i]);
-            }
-            return result;
         }
 
         // Instantiates the model under `parent`, scaled so its widest side measures `width` units,

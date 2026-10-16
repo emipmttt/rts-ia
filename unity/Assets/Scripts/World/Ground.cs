@@ -7,6 +7,9 @@ using UnityEngine.Rendering;
 // water plane, and mountains framing the map. The ground texture is the original pixel-art grass
 // with sand, riverbed and rock on steep slopes blended in by soft blob masks (like the 2D client's
 // drawGround).
+// The spirit dimension (Spirit) reads the same tile map another way: red grass and taller grey
+// mountains; the rivers and the sea are a bottomless void, their sandy shores and the sand roads are
+// shallow water that pours over the edge in waterfalls, and mist drifts far below.
 // Coordinates: server px (x, y) -> Unity (x / 40, height, -y / 40).
 namespace RTS.World
 {
@@ -18,6 +21,9 @@ namespace RTS.World
         public const int Margin = 12; // decorative tiles around the map
         const int TexPx = 16; // ground texture pixels per tile (the art's own resolution)
         const float HillHeight = 11f;
+        const float SpiritHillHeight = 17f;
+        public const float VoidDepth = 18f;       // spirit: how far the cliffs drop into the void
+        public const float ShallowLevel = 0.28f;  // spirit: surface of the shallow water
         const int ChunkQuads = 32; // render chunk side in quads (16 tiles), culled one by one off screen
 
         public int N { get; private set; } // map side in tiles
@@ -37,15 +43,22 @@ namespace RTS.World
         readonly HashSet<int> flattened = new HashSet<int>();
         Material waterMaterial;
         Texture2D[] waterFrames;
+        public bool Spirit { get; private set; }
+        Material fallMaterial;
+        Texture2D[] fallFrames;
+        readonly List<Transform> mists = new List<Transform>();
 
-        public static Ground Build(Transform parent, int[] tiles)
+        public static Ground Build(Transform parent, int[] tiles, bool spirit = false)
         {
             var go = new GameObject("Ground");
             go.transform.SetParent(parent, false);
             var g = go.AddComponent<Ground>();
+            g.Spirit = spirit;
             g.Init(tiles);
             return g;
         }
+
+        float Hills => Spirit ? SpiritHillHeight : HillHeight;
 
         public int TileAt(int tx, int ty) => tx < 0 || ty < 0 || tx >= N || ty >= N ? Terrain.Grass : tiles[ty * N + tx];
         bool IsWet(int tx, int ty) { int t = TileAt(tx, ty); return t == Terrain.Water || t == Terrain.Bridge; }
@@ -62,7 +75,13 @@ namespace RTS.World
 
             BuildHeights();
             BuildMesh();
-            BuildWater();
+            if (Spirit)
+            {
+                BuildShallows();
+                BuildWaterfalls();
+                BuildMist();
+            }
+            else BuildWater();
             BuildBridges();
         }
 
@@ -151,7 +170,12 @@ namespace RTS.World
                     float u = (float)i / Res - Margin, v = (float)j / Res - Margin;
                     float d = Sd(u, v);
                     float h;
-                    if (d < 0)
+                    if (d < 0 && Spirit)
+                    {
+                        // The void: a sheer cliff straight down
+                        h = Mathf.Lerp(WaterLevel, -VoidDepth, Mathf.SmoothStep(0, 1, Mathf.Clamp01(-d / 0.55f)));
+                    }
+                    else if (d < 0)
                     {
                         h = WaterLevel - 0.12f + d * 0.55f; // riverbed deepens toward the middle
                         h = Mathf.Max(h, WaterLevel - 1.1f);
@@ -160,10 +184,12 @@ namespace RTS.World
                     {
                         // Rolling hills where the low-frequency noise is high, gentle bumps elsewhere
                         float n = Fbm(u * 0.05f, v * 0.05f);
-                        float hills = Mathf.Pow(Mathf.Max(0, n - 0.4f), 1.3f) * HillHeight
+                        float hills = Mathf.Pow(Mathf.Max(0, n - 0.4f), 1.3f) * Hills
                                       + (Fbm(u * 0.2f + 40, v * 0.2f + 40) - 0.5f) * 0.6f;
                         float bank = WaterLevel + 0.1f + Mathf.Min(d, 1.5f) * 0.18f;
                         h = Mathf.Lerp(bank, bank + Mathf.Max(0, hills), Mathf.SmoothStep(0, 1, Mathf.Clamp01((d - 0.3f) / 3.5f)));
+                        // Spirit: the sand roads sink under the shallow water
+                        if (Spirit) h = Mathf.Lerp(h, ShallowLevel - 0.2f, SandNear(u, v));
                     }
                     // Mountains outside the playable map
                     float outside = Mathf.Max(Mathf.Max(-u, u - N), Mathf.Max(-v, v - N));
@@ -174,6 +200,16 @@ namespace RTS.World
                     }
                     heights[j * side + i] = h;
                 }
+        }
+
+        // How much of the ground around tile coords (u, v) is sand (0..1), for sinking the spirit roads
+        float SandNear(float u, float v)
+        {
+            float k = 0;
+            for (int dy = -1; dy <= 1; dy += 2)
+                for (int dx = -1; dx <= 1; dx += 2)
+                    if (TileAt(Mathf.FloorToInt(u + dx * 0.45f), Mathf.FloorToInt(v + dy * 0.45f)) == Terrain.Sand) k += 0.25f;
+            return k;
         }
 
         // Height at server tile coords (u, v) (continuous), bilinear over the vertex grid
@@ -240,6 +276,13 @@ namespace RTS.World
         void LateUpdate()
         {
             if (waterFrames != null) waterMaterial.SetTexture("_MainTex", waterFrames[(int)(Time.time / 0.5f) % 2]);
+            if (fallFrames != null) fallMaterial.SetTexture("_MainTex", fallFrames[(int)(Time.time / 0.07f) % fallFrames.Length]);
+            for (int i = 0; i < mists.Count; i++)
+            {
+                // Each layer drifts its own way, wrapping every 4 tiles (the texture repeats)
+                float t = Time.time * (0.12f + i * 0.05f);
+                mists[i].localPosition = new Vector3(Mathf.Repeat(t, 4) - 2, mists[i].localPosition.y, Mathf.Repeat(t * (i % 2 == 0 ? 0.6f : -0.8f), 4) - 2);
+            }
             if (!dirty) return;
             dirty = false;
             UpdateVertices();
@@ -288,9 +331,11 @@ namespace RTS.World
                     float outside = Mathf.Max(Mathf.Max(-u, u - N), Mathf.Max(-v, v - N));
                     float h = heights[j * side + i];
                     // Hilltops a touch lighter (cool, never yellow), the mountains around the map grey-blue
-                    float lift = Mathf.Clamp01(h / HillHeight);
+                    float lift = Mathf.Clamp01(h / Hills);
                     var c = Color.Lerp(new Color(0.95f, 0.97f, 0.97f), new Color(1.04f, 1.06f, 1.05f), lift);
                     if (outside > 0) c = Color.Lerp(c, new Color(0.78f, 0.82f, 0.84f), Mathf.Clamp01(outside / 6f));
+                    // The void's walls fade into a bright white haze as they drop
+                    if (h < 0) c = Color.Lerp(c, Color.white, Mathf.Clamp01(-h / (VoidDepth * 0.6f)));
                     colors[j * side + i] = c;
                 }
             UpdateVertices();
@@ -384,7 +429,7 @@ namespace RTS.World
         const int MaskRes = 4;      // mask samples per tile
         const float RockSlope = 0.2f; // 1 - normal.y from which the ground is bare rock (about 37°)
         int maskW;
-        float[] sandMask, bedMask, rockRaw, rockMask;
+        float[] sandMask, bedMask, rockRaw, rockMask, highMask;
         Color32[] grassPx, sandPx, rockPx, groundPx;
         Texture2D groundTex;
 
@@ -411,7 +456,7 @@ namespace RTS.World
                             int tile = TileAt(tx, ty);
                             if (tile == Terrain.Sand && dist < 0.85f) s = 1;
                             if ((tile == Terrain.Water || tile == Terrain.Bridge) && dist < 1.6f) s = 1;
-                            if ((tile == Terrain.Water || tile == Terrain.Bridge) && dist < 0.95f) b = 1;
+                            if ((tile == Terrain.Water || tile == Terrain.Bridge) && dist < 0.95f && !Spirit) b = 1;
                         }
                     sandMask[j * mw + i] = s;
                     bedMask[j * mw + i] = b;
@@ -421,11 +466,22 @@ namespace RTS.World
             rockRaw = new float[mw * mw];
             rockMask = new float[mw * mw];
             UpdateRock(0, 0, mw - 1, mw - 1);
+            if (Spirit)
+            {
+                // Grey stone over the high ground: the mountains are bare rock from about half way up
+                highMask = new float[mw * mw];
+                for (int j = 0; j < mw; j++)
+                    for (int i = 0; i < mw; i++)
+                    {
+                        float u = (i + 0.5f) / MaskRes - Margin, v = (j + 0.5f) / MaskRes - Margin;
+                        highMask[j * mw + i] = Mathf.SmoothStep(0, 1, Mathf.Clamp01((HeightAtTile(u, v) - 3.5f) / 3f));
+                    }
+            }
 
             int size = w * TexPx;
-            grassPx = GameAssets.Grass.GetPixels32();
-            sandPx = GameAssets.Sand.GetPixels32();
-            rockPx = GameAssets.Cliff.GetPixels32();
+            grassPx = (Spirit ? GameAssets.SpiritGrass : GameAssets.Grass).GetPixels32();
+            sandPx = (Spirit ? GameAssets.SpiritShallowBed : GameAssets.Sand).GetPixels32();
+            rockPx = (Spirit ? GameAssets.SpiritRock : GameAssets.Cliff).GetPixels32();
             groundPx = new Color32[size * size];
             groundTex = new Texture2D(size, size, TextureFormat.RGBA32, true) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp, anisoLevel = 4 };
             PaintGround(0, 0, size - 1, size - 1);
@@ -473,6 +529,7 @@ namespace RTS.World
                     float ks = Mathf.SmoothStep(0, 1, Mathf.Clamp01((ms + dither - 0.35f) / 0.3f));
                     // Sand (river banks, beaches) always wins over rock
                     float kr = Mathf.SmoothStep(0, 1, Mathf.Clamp01((mr + dither - 0.35f) / 0.3f)) * (1 - ks);
+                    if (highMask != null) kr = Mathf.Max(kr, Mathf.SmoothStep(0, 1, Mathf.Clamp01((SampleMask(highMask, mw, u * MaskRes, v * MaskRes) + dither - 0.35f) / 0.3f)));
                     float kb = Mathf.SmoothStep(0, 1, Mathf.Clamp01((mb + dither - 0.4f) / 0.3f));
                     var c = Color32.Lerp(grassPx[tp], sandPx[tp], ks);
                     c = Color32.Lerp(c, rockPx[tp], kr);
@@ -548,6 +605,139 @@ namespace RTS.World
             mr.shadowCastingMode = ShadowCastingMode.Off;
         }
 
+        // ---------- Spirit dimension: shallows, waterfalls, mist ----------
+
+        bool IsVoid(int tx, int ty) => TileAt(tx, ty) == Terrain.Water;
+
+        // Shallow water over every land tile: it only shows where the ground dips under it (the shores
+        // around the void and the sunken sand roads); the rest of the land stands above it
+        void BuildShallows()
+        {
+            var verts = new List<Vector3>();
+            var tris = new List<int>();
+            for (int ty = -Margin; ty < N + Margin; ty++)
+                for (int tx = -Margin; tx < N + Margin; tx++)
+                {
+                    if (IsWet(tx, ty)) continue;
+                    int i = verts.Count;
+                    verts.Add(new Vector3(tx, ShallowLevel, -ty)); verts.Add(new Vector3(tx + 1, ShallowLevel, -ty));
+                    verts.Add(new Vector3(tx, ShallowLevel, -(ty + 1))); verts.Add(new Vector3(tx + 1, ShallowLevel, -(ty + 1)));
+                    tris.AddRange(new[] { i, i + 1, i + 3, i, i + 3, i + 2 });
+                }
+            var m = new Mesh { indexFormat = IndexFormat.UInt32, name = "Shallows" };
+            m.SetVertices(verts);
+            m.SetTriangles(tris, 0);
+            var normals = new Vector3[verts.Count];
+            for (int k = 0; k < normals.Length; k++) normals[k] = Vector3.up;
+            m.normals = normals;
+            m.RecalculateBounds();
+            var go = new GameObject("Shallows");
+            go.transform.SetParent(transform, false);
+            go.AddComponent<MeshFilter>().sharedMesh = m;
+            var mr = go.AddComponent<MeshRenderer>();
+            waterMaterial = new Material(Shader.Find("RTS/Water"));
+            waterFrames = GameAssets.SpiritWater;
+            waterMaterial.SetTexture("_MainTex", waterFrames[0]);
+            waterMaterial.SetFloat("_Tiles", 1f);
+            waterMaterial.SetColor("_Color", new Color(1, 1, 1, 0.72f));
+            mr.sharedMaterial = waterMaterial;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+        }
+
+        // Wherever land meets the void its shallow water spills over the lip and falls straight down,
+        // fading out far below
+        void BuildWaterfalls()
+        {
+            var verts = new List<Vector3>();
+            var uvs = new List<Vector2>();
+            var cols = new List<Color32>();
+            var tris = new List<int>();
+            const float Lip = 0.62f;                 // how far out it clears the cliff's top
+            float[] rows = { ShallowLevel, -0.9f, -4f, -9f, -VoidDepth + 2 };
+            byte[] alpha = { 230, 235, 200, 110, 0 };
+            void Edge(Vector3 a, Vector3 b, Vector3 outward)
+            {
+                int start = verts.Count;
+                for (int k = 0; k < rows.Length; k++)
+                {
+                    float o = k == 0 ? 0 : Lip + (k - 1) * 0.08f;   // over the lip, then straight down
+                    float y = rows[k];
+                    verts.Add(a + outward * o + Vector3.up * y);
+                    verts.Add(b + outward * o + Vector3.up * y);
+                    float vv = k == 0 ? 0 : (ShallowLevel - y) + 0.6f;
+                    uvs.Add(new Vector2(0, vv)); uvs.Add(new Vector2(1, vv));
+                    var c = new Color32(255, 255, 255, alpha[k]);
+                    cols.Add(c); cols.Add(c);
+                }
+                for (int k = 0; k < rows.Length - 1; k++)
+                {
+                    int i = start + k * 2;
+                    tris.AddRange(new[] { i, i + 1, i + 3, i, i + 3, i + 2 });
+                }
+            }
+            for (int ty = -Margin; ty < N + Margin; ty++)
+                for (int tx = -Margin; tx < N + Margin; tx++)
+                {
+                    if (IsWet(tx, ty)) continue;
+                    // Each side of this land tile that faces a void tile
+                    if (IsVoid(tx + 1, ty)) Edge(new Vector3(tx + 1, 0, -ty), new Vector3(tx + 1, 0, -(ty + 1)), Vector3.right);
+                    if (IsVoid(tx - 1, ty)) Edge(new Vector3(tx, 0, -(ty + 1)), new Vector3(tx, 0, -ty), Vector3.left);
+                    if (IsVoid(tx, ty + 1)) Edge(new Vector3(tx + 1, 0, -(ty + 1)), new Vector3(tx, 0, -(ty + 1)), Vector3.back);
+                    if (IsVoid(tx, ty - 1)) Edge(new Vector3(tx, 0, -ty), new Vector3(tx + 1, 0, -ty), Vector3.forward);
+                }
+            if (verts.Count == 0) return;
+            var m = new Mesh { indexFormat = IndexFormat.UInt32, name = "Waterfalls" };
+            m.SetVertices(verts);
+            m.SetUVs(0, uvs);
+            m.SetColors(cols);
+            m.SetTriangles(tris, 0);
+            m.RecalculateBounds();
+            var go = new GameObject("Waterfalls");
+            go.transform.SetParent(transform, false);
+            go.AddComponent<MeshFilter>().sharedMesh = m;
+            var mr = go.AddComponent<MeshRenderer>();
+            fallFrames = GameAssets.Waterfall;
+            fallMaterial = new Material(Shader.Find("RTS/Unlit")) { name = "Waterfall" };
+            fallMaterial.SetTexture("_MainTex", fallFrames[0]);
+            fallMaterial.renderQueue = 2990;
+            mr.sharedMaterial = fallMaterial;
+            mr.shadowCastingMode = ShadowCastingMode.Off;
+        }
+
+        // Layers of white mist down in the void, drifting slowly, thicker further down so the void
+        // reads as a bright, bottomless white; the land above hides them
+        void BuildMist()
+        {
+            float[] depths = { -2.6f, -5.5f, -9f, -13f, -16.5f };
+            for (int i = 0; i < depths.Length; i++)
+            {
+                // The lowest layer is a solid white floor of haze; the others are loose clouds
+                bool floor = i == depths.Length - 1;
+                var tex = floor ? GameAssets.White : GameAssets.SpiritMist;
+                float a = -Margin - 4, b = N + Margin + 4;
+                var m = new Mesh { name = "Mist" };
+                m.vertices = new[] { new Vector3(a, 0, -a), new Vector3(b, 0, -a), new Vector3(a, 0, -b), new Vector3(b, 0, -b) };
+                float k = 0.25f; // texture repeats every 4 tiles
+                m.uv = new[] { new Vector2(a * k, a * k), new Vector2(b * k, a * k), new Vector2(a * k, b * k), new Vector2(b * k, b * k) };
+                byte al = floor ? (byte)245 : (byte)(120 + i * 30); // denser further down: the bottom is white
+                var c = floor ? new Color32(246, 248, 252, al) : new Color32(255, 255, 255, al);
+                m.colors32 = new[] { c, c, c, c };
+                m.triangles = new[] { 0, 1, 3, 0, 3, 2 };
+                m.RecalculateBounds();
+                var go = new GameObject("Mist");
+                go.transform.SetParent(transform, false);
+                go.transform.localPosition = new Vector3(0, depths[i], 0);
+                go.AddComponent<MeshFilter>().sharedMesh = m;
+                var mr = go.AddComponent<MeshRenderer>();
+                var mat = new Material(Shader.Find("RTS/Unlit")) { name = "Mist" };
+                mat.SetTexture("_MainTex", tex);
+                mat.renderQueue = 2980 - i;
+                mr.sharedMaterial = mat;
+                mr.shadowCastingMode = ShadowCastingMode.Off;
+                mists.Add(go.transform);
+            }
+        }
+
         // ---------- Bridges ----------
 
         // Wooden planks across the river with rails on the sides facing open water, on posts; pixel-art
@@ -588,7 +778,7 @@ namespace RTS.World
                             var along = vertical ? new Vector3(0, 0, s) : new Vector3(s, 0, 0);
                             Box(dark, c + off + along + new Vector3(0, 0.12f, 0), new Vector3(0.07f, 0.34f, 0.07f));
                             float bottom = HeightAtTile(tx + 0.5f, ty + 0.5f);
-                            float postH = DeckHeight - bottom;
+                            float postH = Mathf.Min(DeckHeight - bottom, Spirit ? 2.5f : 99);
                             if (postH > 0.05f) Box(dark, c + off + along + new Vector3(0, -postH / 2, 0), new Vector3(0.09f, postH, 0.09f));
                         }
                     }

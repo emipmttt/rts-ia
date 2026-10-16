@@ -52,7 +52,7 @@ namespace RTS.World
             n = ground.N;
             margin = Ground.Margin;
             material = new Material(Shader.Find("RTS/Grass")) { name = "Grass" };
-            material.SetTexture("_MainTex", GameAssets.GrassTuft);
+            material.SetTexture("_MainTex", ground.Spirit ? GameAssets.SpiritGrassTuft : GameAssets.GrassTuft);
             chunksPerSide = (n + 2 * margin + ChunkTiles - 1) / ChunkTiles;
             chunks = new Chunk[chunksPerSide * chunksPerSide];
             for (int i = 0; i < chunks.Length; i++) chunks[i] = new Chunk();
@@ -69,6 +69,8 @@ namespace RTS.World
                         float u = tx + 0.1f + Hash(tx, ty, k * 5 + 1) * 0.8f, v = ty + 0.1f + Hash(tx, ty, k * 5 + 2) * 0.8f;
                         // Rock shows on slopes steeper than this: keep the grass off it
                         if (ground.Normal(u * C.TileSize, v * C.TileSize).y < 0.85f) continue;
+                        // Spirit: none on the bare grey stone of the high ground
+                        if (ground.Spirit && ground.HeightAtTile(u, v) > 3.5f) continue;
                         chunk.tufts.Add(new Tuft
                         {
                             u = u, v = v, tx = tx, ty = ty,

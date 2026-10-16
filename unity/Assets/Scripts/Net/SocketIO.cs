@@ -43,6 +43,8 @@ namespace RTS.Net
         }
 
         public void On(string evt, Action<JToken> handler) => handlers[evt] = handler;
+        // game:state has its own streaming reader (see StateMsg)
+        public Action<StateMsg> OnState;
 
         public void Emit(string evt, object data = null)
         {
@@ -132,9 +134,9 @@ namespace RTS.Net
                 try { a(); } catch (Exception e) { Debug.LogException(e); }
             }
             var state = Interlocked.Exchange(ref latestState, null);
-            if (state != null && handlers.TryGetValue("game:state", out var onState))
+            if (state != null && OnState != null)
             {
-                try { onState(JArray.Parse(state)[1]); } catch (Exception e) { Debug.LogException(e); }
+                try { OnState(StateMsg.Read(state)); } catch (Exception e) { Debug.LogException(e); }
             }
         }
 
