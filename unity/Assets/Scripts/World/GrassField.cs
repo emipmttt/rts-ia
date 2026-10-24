@@ -99,14 +99,14 @@ namespace RTS.World
 
         int ChunkOf(int tx, int ty) => ((ty + margin) / ChunkTiles) * chunksPerSide + (tx + margin) / ChunkTiles;
 
-        // Grass tiles away from sand and water
+        // Grass tiles away from sand, water and crystal outcrops
         bool Meadow(int tx, int ty)
         {
             for (int dy = -2; dy <= 2; dy++)
                 for (int dx = -2; dx <= 2; dx++)
                 {
                     int t = ground.TileAt(tx + dx, ty + dy);
-                    if (t == Terrain.Water || t == Terrain.Bridge) return false;
+                    if (t == Terrain.Water || t == Terrain.Bridge || (t == Terrain.Crystal && dx * dx + dy * dy <= 2)) return false;
                     if (t == Terrain.Sand && dx * dx + dy * dy <= 2) return false;
                 }
             return true;

@@ -206,7 +206,7 @@ export class GameRoom {
     this.walkBlocked = new Uint8Array(this.mapTiles * this.mapTiles);
     const spawns = assignSpawns([...this.players.keys()], this.mapSize, (id) => this.players.get(id).team);
     const mapCenter = { x: this.mapSize / 2, y: this.mapSize / 2 };
-    this.world = generateWorld(Math.floor(Math.random() * 2 ** 31), this.mapTiles, [...spawns.values()], [mapCenter]);
+    this.world = generateWorld(Math.floor(Math.random() * 2 ** 31), this.mapTiles, [...spawns.values()], [mapCenter], { theme: this.settings.map });
     for (const r of this.world.resources) {
       this.resources.set(r.id, r);
       if (isSheep(r)) r.owner = null; // sheep walk around, so they don't occupy a tile
@@ -216,7 +216,7 @@ export class GameRoom {
 
     if (this.settings.central) this.spawnCentral(mapCenter);
 
-    this.world.tiles.forEach((t, i) => { if (t === Terrain.WATER) this.walkBlocked[i] = 1; });
+    this.world.tiles.forEach((t, i) => { if (t === Terrain.WATER || t === Terrain.CRYSTAL) this.walkBlocked[i] = 1; });
     for (const r of this.resources.values()) if (isSolidResource(r)) this.walkBlocked[r.ty * this.mapTiles + r.tx] = 1;
 
     this.io.to(this.id).emit('game:start', this.startPayload());
@@ -384,13 +384,13 @@ export class GameRoom {
   // Tiles a building stands on (a wall piece may have only part of its cell)
   cellsOf(b) { return b.cells ?? footprint(b.type, b.tx, b.ty); }
 
-  // Tiles a wall piece can't take: buildings, trees, mines, water and bridges (bushes are fine)
+  // Tiles a wall piece can't take: buildings, trees, mines, water, bridges and crystal (bushes are fine)
   isWallBlocked = (x, y) => {
     if (this.buildingTiles.has(tileKey(x, y))) return true;
     const r = this.resources.get(this.resourceTiles.get(tileKey(x, y)));
     if (r && isSolidResource(r)) return true;
     const t = this.world.tiles[y * this.mapTiles + x];
-    return t === Terrain.WATER || t === Terrain.BRIDGE;
+    return t === Terrain.WATER || t === Terrain.BRIDGE || t === Terrain.CRYSTAL;
   };
 
   // A tile freed inside a partial wall piece's cell (a tree felled, a mine emptied, a building gone)
@@ -411,8 +411,11 @@ export class GameRoom {
     }
   }
 
-  isTileBlocked = (x, y) => this.resourceTiles.has(tileKey(x, y)) || this.buildingTiles.has(tileKey(x, y))
-    || this.world.tiles[y * this.mapTiles + x] === Terrain.WATER || this.world.tiles[y * this.mapTiles + x] === Terrain.BRIDGE;
+  isTileBlocked = (x, y) => {
+    if (this.resourceTiles.has(tileKey(x, y)) || this.buildingTiles.has(tileKey(x, y))) return true;
+    const t = this.world.tiles[y * this.mapTiles + x];
+    return t === Terrain.WATER || t === Terrain.BRIDGE || t === Terrain.CRYSTAL;
+  };
 
   // Distance from a building's middle, along `angle`, to just past its walls (the square footprint
   // reaches further toward the corners; the 3D models overhang it a little)

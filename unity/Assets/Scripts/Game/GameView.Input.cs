@@ -413,6 +413,7 @@ namespace RTS.Game
             }
             var order = SendOrder(unitIds, screen, world);
             markers.Add(new Marker { x = world.x, y = world.y, color = MarkerColors[order] });
+            Sfx.Play(order == "attack" ? "orderAttack" : "order");
         }
 
         // Right click order; with Shift held it is queued after what the units are doing (AoE waypoints)
@@ -465,7 +466,7 @@ namespace RTS.Game
                 return;
             }
             markers.Add(new Marker { x = world.x, y = world.y, color = MarkerColors[resourceId != null ? "gather" : "move"] });
-            Sfx.Play("click");
+            Sfx.Play("order");
         }
 
         // My villagers with no job (a plain move order that has finished counts as idle)

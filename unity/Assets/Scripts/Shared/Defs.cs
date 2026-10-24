@@ -24,7 +24,7 @@ namespace RTS
 
     public static class Terrain
     {
-        public const int Grass = 0, Sand = 1, Water = 2, Bridge = 3;
+        public const int Grass = 0, Sand = 1, Water = 2, Bridge = 3, Crystal = 4; // crystal: spirit outcrops, impassable
     }
 
     public class Cost : Dictionary<string, int>

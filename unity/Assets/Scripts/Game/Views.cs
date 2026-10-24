@@ -18,6 +18,8 @@ namespace RTS.Game
         public bool gone;               // destroyed out of sight: kept as last seen until looked at
         public bool active = true;      // drawn (in sight, or a building remembered as last seen)
         public float push;              // how hard it bends the grass it stands in (eased)
+        public bool wet;                // standing in water (splashes when it steps in)
+        public float rippleAt;          // last ring it left on the water
 
         public GameObject root;         // on the ground at (gx, gy)
         public Transform billboard;     // faces the camera

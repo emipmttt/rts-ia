@@ -4,7 +4,7 @@
 // for the player's colour; walls stay red, black and gold. Front is +z.
 // Run from the repo root: node unity/Tools/build-fire-center.mjs
 import { writeFileSync } from 'node:fs';
-import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, midPivot, writeAges } from './model-kit.mjs';
+import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, midPivot, writeAges, useDensity } from './model-kit.mjs';
 
 // One file per age: center_fire_a1, center_fire, center_fire_a3
 const OUT = (suffix) => new URL(`../Assets/Resources/models/center_fire${suffix}.bytes`, import.meta.url);
@@ -225,6 +225,7 @@ for (const sx of [-2.85, 2.85]) {
 }
 
 // ---------- Paint and write ----------
+useDensity('center_fire', mesh.tris, D);
 const rgba = paintAtlas(ATLAS, REGIONS);
 const { texture, normalTexture } = writeAges(OUT, 'center_fire', 'FireCenter', mesh.tris, REGIONS, D, ATLAS, rgba, heightOf, 0.8, 'fire');
 writeFileSync(PREVIEW, texture);

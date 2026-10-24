@@ -77,36 +77,167 @@ export function muted([r, g, b]) {
   return [r, g, b].map((c) => Math.round(Math.min(255, (l + (c - l) * k) * 0.94 + 10)));
 }
 
-// Packs `regions` ({ name: { w, h, paint(r) } }) into a size x size atlas and paints them. Painters
-// draw with r.set(x, y, rgb) / r.fill(x, y, w, h, rgb), y = 0 being the region's bottom row; base
-// colours are muted unless `mute` is false
+// ---------- Texel density ----------
+// Every model is drawn in the game at the same density, TEXELS_PER_TILE art pixels per tile, whatever
+// its size: each builder paints its regions at its own resolution (D texels per model unit), and the
+// atlas scales them by the factor that brings that to TEXELS_PER_TILE once the game has fitted the
+// model to its width there (GAME_WIDTH, tiles; keep in step with the game's model widths).
+export const TEXELS_PER_TILE = 24;
+const GAME_WIDTH = {
+  center: 7.56, house: 1.9, farm: 2.16, lumber: 3.8, barracks: 3.8, monastery: 3.8, tower: 1.8,
+  fortress: 5.7, gate: 2, wall_post: 0.8, wall_span: 2, gold: 0.92, stone: 0.92,
+  crystal_small: 3, crystal_mid: 7, crystal_big: 17,
+};
+const DECOR_SCALE = 2.1; // decor_*, spirit_*: drawn at ~2.1x their model size (World/Decor.cs)
+
+let texelScale = 1;
+const atlasSizes = new WeakMap(); // regions -> the atlas size they were last packed into
+
+// Sets the scale of the next paintAtlas for model `name` (its triangles `tris`, painted at D texels
+// per model unit); returns it
+export function useDensity(name, tris, D) {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const t of tris) for (const p of t.w) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); z0 = Math.min(z0, p[2]); z1 = Math.max(z1, p[2]); }
+  const width = Math.max(x1 - x0, z1 - z0);
+  const key = Object.keys(GAME_WIDTH).filter((k) => name.startsWith(k)).sort((a, b) => b.length - a.length)[0];
+  const game = key ? GAME_WIDTH[key] : width * DECOR_SCALE;
+  texelScale = (TEXELS_PER_TILE * game) / (width * D);
+  return texelScale;
+}
+
+const lum = (c) => (c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11) / 255;
+
+// Upscales a painted region (native w0 x h0, rows bottom-up) by its density factor into the atlas and
+// works the finer grid: where two colours meet, the brighter side gets a lit top/left edge and a
+// shaded bottom/right one and a darker side is shadowed under a brighter one above it, so bricks,
+// planks, trims and openings read with relief; wide flat areas get a faint grain
+function detail(native, w0, h0, w, h, put) {
+  const px = (x, y) => native[Math.min(h0 - 1, Math.max(0, y)) * w0 + Math.min(w0 - 1, Math.max(0, x))];
+  const kx = w / w0, ky = h / h0;
+  const sx = (x) => Math.min(w0 - 1, Math.floor(x / kx)), sy = (y) => Math.min(h0 - 1, Math.floor(y / ky));
+  const differ = (a, b) => a !== b && Math.abs(lum(a) - lum(b)) > 0.04;
+  const scale = (c, k) => c.map((v) => Math.max(0, Math.min(255, Math.round(v * k))));
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const nx = sx(x), ny = sy(y), c = px(nx, ny);
+      if (isTeam(c)) { put(x, y, c); continue; }
+      // Sides of this art pixel's block on the fine grid (only blocks two texels or wider get edges)
+      const bw = Math.round(kx) >= 2, bh = Math.round(ky) >= 2;
+      const top = bh && sy(y + 1) !== ny, bottom = bh && sy(y - 1) !== ny;
+      const left = bw && sx(x - 1) !== nx, right = bw && sx(x + 1) !== nx;
+      let k = 1;
+      const up = px(nx, ny + 1), down = px(nx, ny - 1), lf = px(nx - 1, ny), rt = px(nx + 1, ny);
+      if (top && differ(c, up)) k *= lum(c) > lum(up) ? 1.1 : 0.84;
+      else if (bottom && differ(c, down) && lum(c) > lum(down)) k *= 0.92;
+      if (left && differ(c, lf) && lum(c) > lum(lf)) k *= 1.05;
+      else if (right && differ(c, rt) && lum(c) > lum(rt)) k *= 0.95;
+      if (k === 1 && bw && bh) k = 0.975 + hash(x * 7 + nx, y * 13 + ny) * 0.05;
+      put(x, y, k === 1 ? c : scale(c, k));
+    }
+}
+
+// ---------- Fine painters ----------
+// A painter marked fine paints its region at its size in the atlas, the game's density, instead of
+// being painted small and scaled up: for materials whose detail is finer than the model's own art
+export const fine = (paint) => Object.assign(paint, { fine: true });
+
+// Natural rock, a rugged mountain face rather than blocks: irregular facets (cells around jittered
+// points, stretched upright like the spirit cliffs' stone) each on its own tone of a soft six-tone
+// ramp, gently lit along its upper-left side and shaded along its lower-right, split by thin cracks a
+// little deeper than the stone, with a faint mottle. Colours: { dark, base, light, high, crack }, optional `vein` (+ `veinLight`) threading the
+// rock (gold) and `top` (+ `topDark`) along the top rows (moss)
+const mixc = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+export function fineRock(c, seed = 1) {
+  // A narrow, soft ramp around the base colour: gentle steps, cracks only a shade or two deeper
+  const ramp = [mixc(c.dark, c.base, 0.3), mixc(c.dark, c.base, 0.6), mixc(c.dark, c.base, 0.85), c.base, mixc(c.base, c.light, 0.55), mixc(c.base, c.high, 0.5)];
+  const crack = mixc(c.crack, c.dark, 0.65);
+  const h = (x, y) => hash(x * 31 + seed * 977, y * 17 + seed * 131);
+  const CW = 7, CH = 12; // cell grid (texels): facets about this size, taller than wide
+  return fine((r) => {
+    const point = (i, j) => [(i + 0.15 + h(i, j * 3 + 1) * 0.7) * CW, (j + 0.15 + h(i * 5 + 2, j) * 0.7) * CH];
+    for (let y = 0; y < r.h; y++)
+      for (let x = 0; x < r.w; x++) {
+        const ci = Math.floor(x / CW), cj = Math.floor(y / CH);
+        let d1 = Infinity, d2 = Infinity, best = null;
+        for (let j = cj - 1; j <= cj + 1; j++)
+          for (let i = ci - 1; i <= ci + 1; i++) {
+            const [px, py] = point(i, j);
+            const d = Math.hypot((x + 0.5 - px) / CW, (y + 0.5 - py) / CH);
+            if (d < d1) { d2 = d1; d1 = d; best = [i, j, px, py]; } else if (d < d2) d2 = d;
+          }
+        const [i, j, px, py] = best;
+        // The facet's own tone, then lit toward its upper left (rows grow upward) and shaded toward
+        // its lower right
+        const lean = ((px - (x + 0.5)) / CW + ((y + 0.5) - py) / CH) * 1.1;
+        let k = 3 + (h(i, j) - 0.5) * 1.6 + lean + (h(x >> 1, y >> 1) - 0.5) * 0.5;
+        const edge = d2 - d1;
+        if (edge < 0.06) k = -1;
+        else if (edge < 0.14) k = Math.min(k, 1.6);
+        let col = k < 0 ? crack : ramp[Math.max(0, Math.min(5, Math.round(k)))];
+        if (c.vein && k >= 0) {
+          const v = Math.abs(((x * 0.55 + y + Math.sin(x * 0.35 + seed) * 3) % 23 + 23) % 23 - 11.5);
+          if (v < 0.75 && h(x >> 2, y >> 2) > 0.25) col = h(x, y) > 0.5 ? c.veinLight ?? c.vein : c.vein;
+        }
+        r.set(x, y, col);
+      }
+    if (c.top) for (let x = 0; x < r.w; x++) {
+      const band = 2 + Math.floor(h(x >> 1, 3) * 3) + (h(x >> 1, 5) > 0.85 ? Math.floor(h(x, 9) * 6) : 0);
+      for (let k = 0; k < band; k++) r.set(x, r.h - 1 - k, k === band - 1 ? c.topDark ?? c.top : c.top);
+    }
+  });
+}
+
+// Packs `regions` ({ name: { w, h, paint(r) } }) into an atlas and paints them. Painters draw with
+// r.set(x, y, rgb) / r.fill(x, y, w, h, rgb), y = 0 being the region's bottom row, at the region's own
+// size; each region is then scaled by the density set with useDensity (r.w, r.h, r.k become its size
+// and scale in the atlas). The atlas grows from `size` (a power of two) until everything fits; its
+// size is rgba.length / 4 square. Base colours are muted unless `mute` is false
 export function paintAtlas(size, regions, mute = true) {
-  const rgba = new Uint8ClampedArray(size * size * 4);
-  // Shelf packing with a 1 px gutter around each region
-  let x = 1, y = 1, shelf = 0;
-  for (const r of Object.values(regions).sort((a, b) => b.h - a.h)) {
-    if (x + r.w + 1 > size) { x = 1; y += shelf + 2; shelf = 0; }
-    Object.assign(r, { x, y });
-    x += r.w + 2;
-    shelf = Math.max(shelf, r.h);
-    if (y + r.h + 1 > size) throw new Error('Atlas too small');
+  const k = texelScale;
+  texelScale = 1;
+  const list = Object.values(regions);
+  for (const r of list) {
+    r.w0 ??= r.w; r.h0 ??= r.h;
+    r.k = k;
+    r.w = Math.max(1, Math.round(r.w0 * k)); r.h = Math.max(1, Math.round(r.h0 * k));
   }
+  // Shelf packing with a 1 px gutter around each region
+  const pack = (size) => {
+    let x = 1, y = 1, shelf = 0;
+    for (const r of [...list].sort((a, b) => b.h - a.h)) {
+      if (x + r.w + 1 > size) { x = 1; y += shelf + 2; shelf = 0; }
+      Object.assign(r, { x, y });
+      x += r.w + 2;
+      shelf = Math.max(shelf, r.h);
+      if (r.w + 2 > size || y + r.h + 1 > size) return false;
+    }
+    return true;
+  };
+  while (!pack(size)) {
+    size *= 2;
+    if (size > 4096) throw new Error('Atlas too small');
+  }
+  atlasSizes.set(regions, size);
+  const rgba = new Uint8ClampedArray(size * size * 4);
   const at = (x, y) => ((y * size) + x) * 4;
-  for (const r of Object.values(regions)) {
-    r.set = (x, y, c) => {
+  for (const r of list) {
+    // Painted at its own size first (fine painters: at its size in the atlas)
+    const pw = r.paint.fine ? r.w : r.w0, ph = r.paint.fine ? r.h : r.h0;
+    const native = new Array(pw * ph).fill([0, 0, 0]);
+    const paint = Object.create(r); // the region's own fields, at its own size
+    paint.w = pw; paint.h = ph;
+    paint.set = (x, y, c) => {
       x = Math.floor(x); y = Math.floor(y);
-      if (x < 0 || y < 0 || x >= r.w || y >= r.h) return;
+      if (x < 0 || y < 0 || x >= pw || y >= ph) return;
+      native[y * pw + x] = [c[0], c[1], c[2]];
+    };
+    paint.fill = (x0, y0, w, h, c) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) paint.set(x, y, c); };
+    r.paint(paint);
+    if (mute) for (let i = 0; i < native.length; i++) if (!isTeam(native[i])) native[i] = muted(native[i]);
+    detail(native, pw, ph, r.w, r.h, (x, y, c) => {
       const i = at(r.x + x, r.y + r.h - 1 - y);
       rgba[i] = c[0]; rgba[i + 1] = c[1]; rgba[i + 2] = c[2]; rgba[i + 3] = 255;
-    };
-    r.fill = (x0, y0, w, h, c) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) r.set(x, y, c); };
-    r.paint(r);
-    if (mute) for (let y = r.y; y < r.y + r.h; y++)
-      for (let x = r.x; x < r.x + r.w; x++) {
-        const i = at(x, y);
-        const c = [rgba[i], rgba[i + 1], rgba[i + 2]];
-        if (!isTeam(c)) rgba.set(muted(c), i);
-      }
+    });
     // Gutter: repeat the edge pixels so point sampling at a face's border never picks a neighbour
     for (let y = r.y - 1; y <= r.y + r.h; y++)
       for (let x = r.x - 1; x <= r.x + r.w; x++) {
@@ -121,6 +252,7 @@ export function paintAtlas(size, regions, mute = true) {
 // Tangent-space normals (OpenGL convention, +green = up in the image) from the relief `heightOf(rgb)`
 // of each pixel's neighbours inside its own region
 export function normalMap(rgba, size, regions, heightOf, strength) {
+  size = Math.round(Math.sqrt(rgba.length / 4)); // the atlas may have grown (paintAtlas)
   const out = new Uint8ClampedArray(size * size * 4);
   for (let i = 0; i < size * size; i++) out.set([128, 128, 255, 255], i * 4);
   const h = (x, y) => heightOf(rgba.subarray((y * size + x) * 4, (y * size + x) * 4 + 3));
@@ -142,7 +274,8 @@ export function normalMap(rgba, size, regions, heightOf, strength) {
 // normals, n: face normal, region, part? }. Coplanar triangles of a region form a face, projected at `D`
 // texels per unit into its region, anchored at the face's bottom and centred horizontally (flat caps
 // are centred both ways), so pixels are the same size everywhere
-export function projectFaces(tris, regions, D, size, label = '') {
+export function projectFaces(tris, regions, D0, size, label = '') {
+  size = atlasSizes.get(regions) ?? size;
   const faces = new Map();
   for (const t of tris) {
     const key = t.anchor
@@ -158,24 +291,26 @@ export function projectFaces(tris, regions, D, size, label = '') {
       const { region, anchor: { o, a, mirror } } = group[0];
       const r = regions[region];
       if (!r) throw new Error(`Unknown region ${region}`);
+      const D = D0 * (r.k ?? 1), K = r.k ?? 1;
       const along = (p) => dot(sub(p, o), a);
       const away = (p) => { const d = sub(p, o), s = dot(d, a); return Math.hypot(d[0] - a[0] * s, d[1] - a[1] * s, d[2] - a[2] * s); };
       const pts = group.flatMap((t) => t.w);
       const s = pts.map(along), hTex = Math.max(...pts.map(away)) * D;
       const sMid = mirror ? 0 : (Math.min(...s) + Math.max(...s)) / 2;
       const wTex = (mirror ? 2 * Math.max(...s.map(Math.abs)) : Math.max(...s) - Math.min(...s)) * D;
-      if (wTex > r.w + 0.5 || hTex + (group[0].shift ?? 0) > r.h + 0.5) console.warn(`${label} ${region}: face ${wTex.toFixed(1)}x${hTex.toFixed(1)} > region ${r.w}x${r.h}`);
+      if (wTex > r.w + K || hTex + (group[0].shift ?? 0) * K > r.h + K) console.warn(`${label} ${region}: face ${wTex.toFixed(1)}x${hTex.toFixed(1)} > region ${r.w}x${r.h}`);
       for (const tri of group)
         tri.w.forEach((p, k) => {
           positions.push(tri.out[k]);
           normals.push(tri.normals[k]);
-          uvs.push([(r.x + r.w / 2 + (along(p) - sMid) * D) / size, (r.y + r.h - away(p) * D - (tri.shift ?? 0)) / size]);
+          uvs.push([(r.x + r.w / 2 + (along(p) - sMid) * D) / size, (r.y + r.h - away(p) * D - (tri.shift ?? 0) * K) / size]);
         });
       continue;
     }
     const { n, region } = group[0];
     const r = regions[region];
     if (!r) throw new Error(`Unknown region ${region}`);
+    const D = D0 * (r.k ?? 1), K = r.k ?? 1;
     const flat = Math.abs(n[1]) > 0.99;
     const sAxis = flat ? [1, 0, 0] : norm(cross([0, 1, 0], n));
     const tAxis = flat ? [0, 0, 1] : cross(n, sAxis);
@@ -183,11 +318,11 @@ export function projectFaces(tris, regions, D, size, label = '') {
     const s = pts.map((p) => dot(p, sAxis)), t = pts.map((p) => dot(p, tAxis));
     const sMid = (Math.min(...s) + Math.max(...s)) / 2, tMin = Math.min(...t), tMid = (tMin + Math.max(...t)) / 2;
     const wTex = (Math.max(...s) - Math.min(...s)) * D, hTex = (Math.max(...t) - tMin) * D;
-    if (wTex > r.w + 0.5 || hTex + (group[0].shift ?? 0) > r.h + 0.5) console.warn(`${label} ${region}: face ${wTex.toFixed(1)}x${hTex.toFixed(1)} > region ${r.w}x${r.h}`);
+    if (wTex > r.w + K || hTex + (group[0].shift ?? 0) * K > r.h + K) console.warn(`${label} ${region}: face ${wTex.toFixed(1)}x${hTex.toFixed(1)} > region ${r.w}x${r.h}`);
     for (const tri of group)
       tri.w.forEach((p, k) => {
         const px = r.x + r.w / 2 + (dot(p, sAxis) - sMid) * D;
-        const row = flat ? r.y + r.h / 2 - (dot(p, tAxis) - tMid) * D : r.y + r.h - (dot(p, tAxis) - tMin) * D - (tri.shift ?? 0);
+        const row = flat ? r.y + r.h / 2 - (dot(p, tAxis) - tMid) * D : r.y + r.h - (dot(p, tAxis) - tMin) * D - (tri.shift ?? 0) * K;
         positions.push(tri.out[k]);
         normals.push(tri.normals[k]);
         uvs.push([px / size, row / size]);
@@ -199,6 +334,7 @@ export function projectFaces(tris, regions, D, size, label = '') {
 // Writes a .glb with one double-sided material (base colour + normal map unless `normals` is null,
 // nearest filtering) and a node per mesh ({ name, translation?, scale?, positions, normals, uvs })
 export function writeGlb(url, name, meshList, atlasSize, rgba, normals) {
+  atlasSize = Math.round(Math.sqrt(rgba.length / 4)); // the atlas may have grown (paintAtlas)
   const texture = png(atlasSize, atlasSize, rgba);
   const normalTexture = normals ? png(atlasSize, atlasSize, normals) : null;
   const chunks = [];

@@ -165,6 +165,66 @@ namespace RTS.Game
             }
         }
 
+        // ---------- Wading ----------
+
+        static readonly int[] SplashColors = { 0xffffff, 0xe8f6ff, 0x9fdcff, 0xcfeeff };
+        const int MaxRipples = 32; // as in Water.shader
+        const float RippleLife = 1.3f;
+        struct Ripple { public Vector2 p; public float born, strength; }
+        readonly List<Ripple> ripples = new List<Ripple>();
+        readonly Vector4[] rippleData = new Vector4[MaxRipples];
+        static readonly int RipplesId = Shader.PropertyToID("_WaterRipples"), RippleCountId = Shader.PropertyToID("_WaterRippleCount");
+
+        // Units walking into the water splash it up with a sound, leave rings behind them as they wade
+        // (a wake when moving, a slow ring now and then standing still) and are heard sloshing
+        void UpdateWading()
+        {
+            float now = Time.time;
+            foreach (var s in sprites.Values)
+            {
+                if (s.isBuilding || !s.active || s.alt > 2) continue;
+                bool wet = ground.WaterDepth(s.gx, s.gy) > 0.04f;
+                if (!wet) { s.wet = false; continue; }
+                var feet = s.root.transform.position;
+                var surface = new Vector3(feet.x, ground.WaterSurface + 0.03f, feet.z);
+                bool moving = Mathf.Abs(s.s.x - s.gx) + Mathf.Abs(s.s.y - s.gy) > 0.5f;
+                if (!s.wet)
+                {
+                    Burst(surface, 12, SplashColors, 45, 130, 0.55f, 400);
+                    AddRipple(surface, 1);
+                    SfxAt("splash", s.gx, s.gy);
+                    s.rippleAt = now;
+                }
+                else if (now - s.rippleAt > (moving ? 0.3f : 1.5f))
+                {
+                    s.rippleAt = now + Random.value * 0.08f;
+                    AddRipple(surface, moving ? 0.7f : 0.35f);
+                    if (moving)
+                    {
+                        Burst(surface, 3, SplashColors, 25, 70, 0.4f, 400);
+                        SfxAt("wade", s.gx, s.gy);
+                    }
+                }
+                s.wet = true;
+            }
+            int n = 0;
+            for (int i = ripples.Count - 1; i >= 0; i--)
+            {
+                float age = now - ripples[i].born;
+                if (age > RippleLife) { ripples.RemoveAt(i); continue; }
+                if (n < MaxRipples && age >= 0) rippleData[n++] = new Vector4(ripples[i].p.x, ripples[i].p.y, age, ripples[i].strength);
+            }
+            Shader.SetGlobalVectorArray(RipplesId, rippleData);
+            Shader.SetGlobalFloat(RippleCountId, n);
+        }
+
+        void AddRipple(Vector3 pos, float strength)
+        {
+            if (!InSight(pos)) return;
+            if (ripples.Count >= MaxRipples * 2) ripples.RemoveAt(0);
+            ripples.Add(new Ripple { p = new Vector2(pos.x, pos.z), born = Time.time, strength = strength });
+        }
+
         // Taking damage: a short red flash and sparks off the body
         void OnHit(EntityView s)
         {

@@ -5,7 +5,7 @@
 // the team green, which the game swaps for the player's colour. Front is +z.
 // Run from the repo root: node unity/Tools/build-air-center.mjs
 import { writeFileSync } from 'node:fs';
-import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, writeAges } from './model-kit.mjs';
+import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, writeAges, useDensity, fineRock } from './model-kit.mjs';
 
 // One file per age: center_a1, center, center_a3
 const OUT = (suffix) => new URL(`../Assets/Resources/models/center${suffix}.bytes`, import.meta.url);
@@ -88,17 +88,8 @@ function spire(r) {
   r.fill(0, r.h - 3, r.w, 3, P.gold);
 }
 
-// Weathered rock: blocky strata, dark cracks, tufts of moss
-function rock(r) {
-  for (let y = 0; y < r.h; y++)
-    for (let x = 0; x < r.w; x++) {
-      const n = hash(x >> 2, y >> 1);
-      let c = n < 0.3 ? P.rockDark : n > 0.75 ? P.rockLight : P.rock;
-      if (hash(x, y >> 2) < 0.07) c = P.crack;
-      if (y > r.h - 4 && hash(x >> 1, 7) < 0.45) c = hash(x, y) < 0.5 ? P.moss : P.mossDark;
-      r.set(x, y, c);
-    }
-}
+// Weathered rock: pillared cliff stone with crevices and ledges (model-kit fineRock)
+const rock = fineRock({ dark: P.rockDark, base: P.rock, light: P.rockLight, high: hex(0xd2b48c), crack: P.crack }, 3);
 
 // Terrace paving: light slabs with a winding path of darker stones
 function pave(r) {
@@ -179,13 +170,23 @@ function ring(cx, cz, radius, y, n, jitter = 0, seed = 0) {
   return pts;
 }
 
-// Rock outcrop with a paved top
+// Rock outcrop with a paved top: a rugged mountainside of several jittered rings bulging out and
+// pulling in as they climb, so it breaks into irregular rocky facets instead of one flat wall
 function crag(cx, cz, r0, r1, y0, y1, n, seed) {
   mesh.part++;
-  const lo = ring(cx, cz, r0, y0, n, 0.25, seed);
-  const top = ring(cx, cz, r1, y1, n, 0.12, seed + 1).map((p) => [p[0], y1, p[2]]);
-  mesh.band(lo, top, [cx, 0, cz], () => 'rock');
-  mesh.cap(top, 'pave');
+  const sides = n * 2, steps = 4;
+  const rings = [];
+  for (let k = 0; k <= steps; k++) {
+    const t = k / steps;
+    const radius = r0 + (r1 - r0) * Math.pow(t, 0.75);
+    const y = y0 + (y1 - y0) * t;
+    if (k === steps) { rings.push(ring(cx, cz, r1, y1, sides, 0.12, seed + 1).map((p) => [p[0], y1, p[2]])); continue; }
+    // Lumps and hollows: radial jitter that grows toward the middle rows, rows shifted up and down
+    const lumpy = ring(cx, cz, radius, y, sides, k ? 0.22 : 0.25, seed * 7 + k * 13);
+    rings.push(lumpy.map((p, i) => [p[0], k ? p[1] + (hash(i * 3 + k, seed) - 0.5) * (y1 - y0) / steps * 0.6 : p[1], p[2]]));
+  }
+  for (let k = 0; k < steps; k++) mesh.band(rings[k], rings[k + 1], [cx, 0, cz], () => 'rock');
+  mesh.cap(rings[steps], 'pave');
 }
 
 // White tower with the spiral band, a lantern, a flared conical roof and a needle spire
@@ -260,6 +261,7 @@ house(-2.1, 2.0, LOW, 0.6, 0.5, 0.75);
 house(1.6, 0.2, LOW, 0.5, 0.7, 0.8);
 
 // ---------- Paint and write ----------
+useDensity('center', mesh.tris, D);
 const rgba = paintAtlas(ATLAS, REGIONS);
 const { texture, normalTexture } = writeAges(OUT, 'center', 'AirTemple', mesh.tris, REGIONS, D, ATLAS, rgba, heightOf, 0.8, 'air');
 writeFileSync(PREVIEW, texture);

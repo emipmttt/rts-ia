@@ -31,11 +31,12 @@ namespace RTS.Game
             Texture = new Texture2D(n * Px, n * Px, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp };
             basePx = new Color32[n * Px * n * Px];
             px = new Color32[basePx.Length];
-            // Spirit dimension: red grass, shallow jade water on the sand, the void white
+            // Spirit dimension: red grass, shallow jade water on the sand, the void white, crystal teal
             var colors = spirit ? new Dictionary<int, Color32>
             {
                 [Terrain.Grass] = new Color32(118, 42, 48, 255), [Terrain.Sand] = new Color32(84, 170, 140, 255),
                 [Terrain.Water] = new Color32(238, 240, 246, 255), [Terrain.Bridge] = new Color32(120, 84, 48, 255),
+                [Terrain.Crystal] = new Color32(86, 206, 226, 255),
             } : new Dictionary<int, Color32>
             {
                 [Terrain.Grass] = new Color32(62, 110, 58, 255), [Terrain.Sand] = new Color32(196, 176, 120, 255),

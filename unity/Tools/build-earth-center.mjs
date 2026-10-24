@@ -5,7 +5,7 @@
 // team green, which the game swaps for the player's colour. Front is +z.
 // Run from the repo root: node unity/Tools/build-earth-center.mjs
 import { writeFileSync } from 'node:fs';
-import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, midPivot, writeAges } from './model-kit.mjs';
+import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, midPivot, writeAges, useDensity } from './model-kit.mjs';
 
 // One file per age: center_earth_a1, center_earth, center_earth_a3
 const OUT = (suffix) => new URL(`../Assets/Resources/models/center_earth${suffix}.bytes`, import.meta.url);
@@ -252,6 +252,7 @@ watchtower(-3.3, 2.9, TERRACE);
 watchtower(3.3, 2.9, TERRACE);
 
 // ---------- Paint and write ----------
+useDensity('center_earth', mesh.tris, D);
 const rgba = paintAtlas(ATLAS, REGIONS);
 const { texture, normalTexture } = writeAges(OUT, 'center_earth', 'EarthPalace', mesh.tris, REGIONS, D, ATLAS, rgba, heightOf, 0.8, 'earth');
 writeFileSync(PREVIEW, texture);

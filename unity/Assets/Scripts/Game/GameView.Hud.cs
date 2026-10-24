@@ -1003,6 +1003,7 @@ namespace RTS.Game
                 {
                     socket.Emit("game:move", new { unitIds, x = world.x, y = world.y, queue = Shift });
                     markers.Add(new Marker { x = world.x, y = world.y, color = MarkerColors["move"] });
+                    Sfx.Play("order");
                     minimapPing = (world, Time.unscaledTime);
                 }
                 else if (placing == null && RallyBuildings().Count > 0)

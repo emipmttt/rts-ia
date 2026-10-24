@@ -968,9 +968,18 @@ export class Game {
   // Arrows from towers and air blasts from air warriors fly toward the target's current position
   addShots(shots) {
     for (const {
-      x, y, targetId, kind, radius, attackerId, fire,
+      x, y, tx, ty, targetId, kind, radius, attackerId, fire,
     } of shots) {
       if (kind === 'blast') { this.windBlast(x, y, radius, attackerId, fire); continue; }
+      // Earthbending line: dust erupting along it (the Unity client draws the rock spikes)
+      if (kind === 'earthLine') {
+        for (let i = 1; i <= 8; i++) {
+          this.burst(x + ((tx - x) * i) / 8, y + ((ty - y) * i) / 8, {
+            n: 4, colors: DUST, speed: 40, up: 50, g: 160, life: 0.5,
+          });
+        }
+        continue;
+      }
       const target = this.sprites.get(targetId);
       if (!target) continue;
       this.sfx('bow', x, y);
@@ -1062,6 +1071,15 @@ export class Game {
   // otherwise it glides back down. Sets s.alt, s.flyAnim and s.flyFrame (null = play normally).
   updateFlyer(s) {
     const now = performance.now();
+    // Earth and water surfers stay on the ground (the Unity client draws their slab)
+    const civ = this.players.get(s.owner)?.civ;
+    if (civ === 'earth' || civ === 'water') {
+      s.alt = 0;
+      s.flyFrame = null;
+      s.flyAnim = s.action === 'attacking' ? 'attack' : s.action === 'moving' ? 'run' : 'idle';
+      s.sprite.y = 0;
+      return;
+    }
     const flying = s.action === 'moving';
     s.alt ??= 0;
     if (flying && !s.wasFlying && s.alt < 4) {
@@ -1618,7 +1636,7 @@ export class Game {
     const owner = this.players.get(s.owner)?.name ?? 'neutral';
     const mine = s.owner === this.myId;
     const name = s.central ? 'Centro urbano central' : stats.name;
-    const lines = [`${name} (${mine ? 'tú' : owner}) — PV ${s.hp}/${s.maxHp ?? stats.hp}`];
+    const lines = [`${name} (${mine ? 'tú' : owner}) — PV ${Math.ceil(s.hp)}/${s.maxHp ?? stats.hp}`];
 
     if (s.central) {
       if (s.hp <= 0) lines.push('¡Caído! Clic derecho con un aldeano para capturarlo');

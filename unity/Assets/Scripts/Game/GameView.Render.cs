@@ -94,6 +94,7 @@ namespace RTS.Game
             }
 
             PushGrass(dt);
+            UpdateWading();
 
             if (territory.Due)
             {
@@ -916,7 +917,7 @@ namespace RTS.Game
         {
             if (resourceAt.ContainsKey(TileKey(x, y))) return true;
             int t = ground.TileAt(x, y);
-            if (t == Terrain.Water || t == Terrain.Bridge) return true;
+            if (t == Terrain.Water || t == Terrain.Bridge || t == Terrain.Crystal) return true;
             foreach (var s in sprites.Values)
                 if (s.isBuilding && Occupies(s, x, y)) return true;
             return false;
@@ -930,12 +931,12 @@ namespace RTS.Game
             return s.s.cells == 0 || (s.s.cells & (1 << (j * n + i))) != 0;
         }
 
-        // Tiles a wall piece can't take: buildings, trees, mines, water, bridges (bushes are fine)
+        // Tiles a wall piece can't take: buildings, trees, mines, water, bridges, crystal (bushes are fine)
         bool IsWallBlocked(int x, int y)
         {
             if (resourceAt.TryGetValue(TileKey(x, y), out var rid) && resources.TryGetValue(rid, out var r) && r.r.variant != "bush") return true;
             int t = ground.TileAt(x, y);
-            if (t == Terrain.Water || t == Terrain.Bridge) return true;
+            if (t == Terrain.Water || t == Terrain.Bridge || t == Terrain.Crystal) return true;
             foreach (var s in sprites.Values)
                 if (s.isBuilding && Occupies(s, x, y)) return true;
             return false;

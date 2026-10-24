@@ -1,4 +1,5 @@
-// Procedural pixel-art units (villager, staff and air warriors, flyer). Each 16x16 reference sprite is split into bones (head, torso, arms,
+// Procedural pixel-art units (villager, staff and air warriors, flyer, and the fire, earth and water
+// civilizations' versions). Each 16x16 reference sprite is split into bones (head, torso, arms,
 // legs) and every animation frame is a pose that moves/rotates those bones, then gets rasterised
 // pixel by pixel (no anti-aliasing). Pure data in, RGBA buffers out, so it can run without a DOM.
 
@@ -38,11 +39,26 @@ export const PALETTE = {
   windBlue: 0x8fd0ff,
   healGreen: 0x7dff7a,
   healGold: 0xfff59d,
+  earth: 0x7a5a36, // earth civilization cloth
+  earthDark: 0x4f3a22,
+  rock: 0x8f8270,
+  rockLight: 0xb9ab92,
+  rockDark: 0x5e5446,
+  dust: 0xd8c08a,
+  navy: 0x2f4a72, // water civilization parkas
+  fur: 0xe9eef2,
+  iceWhite: 0xf2fbff,
+  iceBlue: 0x9fdcff,
+  waterBlue: 0x4a9fe0,
+  bowString: 0xe8e0cc,
+  shieldRim: 0x5a5048,
+  mouth: 0x6b2a24,
 };
 
 // Bones are drawn as text grids (one char per pixel, '.' = empty) in reference-sprite coordinates
 const KEYS = {
   S: 'skin', E: 'eye', H: 'hair', T: 'team', P: 'pants', B: 'shoe', D: 'dark',
+  R: 'earth', K: 'earthDark', N: 'navy', F: 'fur',
 };
 const grid = (rows, y0 = 0, x0 = 0) => rows.flatMap((row, y) => [...row].flatMap((c, x) => (
   c === '.' ? [] : [[x + x0, y + y0, KEYS[c]]])));
@@ -304,7 +320,138 @@ const BODIES = {
     },
   },
 };
+// Earth civilization: brown cloth under team vests; men wear a topknot
+const TOPKNOT = {
+  male: {
+    front: grid(['..H..', '.HHH.', 'HHHHH', 'H...H'], -1),
+    side: grid(['..H..', 'HHHH.', 'HHHHH', 'HH...'], -1),
+    back: grid(['..H..', '.HHH.', 'HHHHH', 'HHHHH', '.HHH.'], -1),
+  },
+};
+const brownLeg = (x0, ankleX, shoe = 'shoe') => leg(x0, 'RR', ankleX, 'skin', shoe, 'KK');
+Object.assign(BODIES, {
+  villager_earth: {
+    torso: grid(['.STS.', '.TTT.', '.RTR.', '.RRR.', 'RRRRR'], 5),
+    torsoBack: grid(['.TTT.', '.TTT.', '.RTR.', '.RRR.', 'RRRRR'], 5),
+    torsoSide: grid(['STT', 'TTT', 'RTR', 'RRR', 'RRR'], 5, 1),
+    legs: [brownLeg(0, 1), brownLeg(3, 3)],
+    legsBack: [brownLeg(0, 1), brownLeg(3, 3)],
+    legSide: (x0) => brownLeg(x0, x0),
+    shoulders: [[0, 5], [4, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 1,
+    arm: ['team', 'skin'],
+    hair: TOPKNOT,
+  },
+  // Rock-fisted brawler: team plates over brown, stone gauntlets
+  warrior_earth: {
+    torso: grid(['KTTTK', 'TKTKT', '.TRT.', '.RRR.', 'KRRRK'], 5),
+    torsoBack: grid(['KTTTK', 'TTTTT', '.TRT.', '.RRR.', 'KRRRK'], 5),
+    torsoSide: grid(['TTK', 'TKT', 'TRT', 'RRR', 'KRR'], 5, 1),
+    legs: [brownLeg(0, 1, 'earthDark'), brownLeg(3, 3, 'earthDark')],
+    legsBack: [brownLeg(0, 1, 'earthDark'), brownLeg(3, 3, 'earthDark')],
+    legSide: (x0) => brownLeg(x0, x0, 'earthDark'),
+    shoulders: [[-1, 5], [5, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 2,
+    arm: ['team', 'team', 'earthDark', 'rock'],
+    armOuter: ['earthDark', 'team', 'earthDark', 'rockDark'],
+    hair: TOPKNOT,
+  },
+  // Geomancer: team robe with a brown sash, bare forearms, team shoes
+  air_earth: {
+    torso: grid(['TTSTT', 'TRTRT', '.TTT.', '.RTR.', 'RRRRR'], 5),
+    torsoBack: grid(['TTTTT', 'TRTRT', '.TTT.', '.RRR.', 'RRRRR'], 5),
+    torsoSide: grid(['TST', 'RTR', 'TTT', 'RTR', 'RRR'], 5, 1),
+    legs: [brownLeg(0, 1, 'team'), brownLeg(3, 3, 'team')],
+    legsBack: [brownLeg(0, 1, 'team'), brownLeg(3, 3, 'team')],
+    legSide: (x0) => brownLeg(x0, x0, 'team'),
+    shoulders: [[0, 5], [4, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 1,
+    arm: ['team', 'team', 'skin'],
+    hair: TOPKNOT,
+  },
+  // Rock surfer: short team tunic with a headband, wide stance on the slab the game draws under it
+  flyer_earth: {
+    torso: grid(['TTSTT', 'TTTTT', '.RTR.', '.RRR.', 'KRRRK'], 5),
+    torsoBack: grid(['TTTTT', 'TTTTT', '.RTR.', '.RRR.', 'KRRRK'], 5),
+    torsoSide: grid(['TST', 'TTT', 'RTR', 'RRR', 'KRR'], 5, 1),
+    legs: [brownLeg(0, 1, 'earthDark'), brownLeg(3, 3, 'earthDark')],
+    legsBack: [brownLeg(0, 1, 'earthDark'), brownLeg(3, 3, 'earthDark')],
+    legSide: (x0) => brownLeg(x0, x0, 'earthDark'),
+    shoulders: [[-1, 5], [5, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 1,
+    arm: ['team', 'skin'],
+    band: true,
+  },
+});
+
+// Water civilization: navy parkas trimmed with white fur, team sashes
+const parkaLeg = (x0, ankleX) => leg(x0, 'NN', ankleX, 'navy', 'fur', 'NN');
+Object.assign(BODIES, {
+  villager_water: {
+    torso: grid(['.FSF.', '.NTN.', '.NTN.', '.NNN.', 'FFFFF'], 5),
+    torsoBack: grid(['.FFF.', '.NNN.', '.NTN.', '.NNN.', 'FFFFF'], 5),
+    torsoSide: grid(['FSF', 'NTN', 'NTN', 'NNN', 'FFF'], 5, 1),
+    legs: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legsBack: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legSide: (x0) => parkaLeg(x0, x0),
+    shoulders: [[0, 5], [4, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 1,
+    arm: ['navy', 'navy', 'fur', 'skin'],
+  },
+  // Water warrior: fur mantle, diagonal team sash, thick sleeves
+  warrior_water: {
+    torso: grid(['FFNFF', 'NTNNN', 'NNTNN', 'NNNTN', 'FFFFF'], 5),
+    torsoBack: grid(['FFFFF', 'NNNTN', 'NNTNN', 'NTNNN', 'FFFFF'], 5),
+    torsoSide: grid(['FFF', 'NTN', 'NNT', 'NNN', 'FFF'], 5, 1),
+    legs: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legsBack: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legSide: (x0) => parkaLeg(x0, x0),
+    shoulders: [[-1, 5], [5, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 2,
+    arm: ['fur', 'navy', 'navy', 'skin'],
+    armOuter: ['fur', 'navy', 'team', 'skin'],
+  },
+  // Hydromancer: team-lined robe with a fur hem
+  air_water: {
+    torso: grid(['NTSTN', 'NNTNN', '.NTN.', '.NNN.', 'FFFFF'], 5),
+    torsoBack: grid(['NTTTN', 'NNTNN', '.NTN.', '.NNN.', 'FFFFF'], 5),
+    torsoSide: grid(['TSN', 'NTN', 'NTN', 'NNN', 'FFF'], 5, 1),
+    legs: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legsBack: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legSide: (x0) => parkaLeg(x0, x0),
+    shoulders: [[0, 5], [4, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 1,
+    arm: ['navy', 'team', 'navy', 'skin'],
+  },
+  // Ice surfer: short parka, team headband
+  flyer_water: {
+    torso: grid(['FTSTF', 'NNTNN', '.NTN.', '.NNN.', 'FFFFF'], 5),
+    torsoBack: grid(['FFFFF', 'NNTNN', '.NTN.', '.NNN.', 'FFFFF'], 5),
+    torsoSide: grid(['FSF', 'NTN', 'NTN', 'NNN', 'FFF'], 5, 1),
+    legs: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legsBack: [parkaLeg(0, 1), parkaLeg(3, 3)],
+    legSide: (x0) => parkaLeg(x0, x0),
+    shoulders: [[-1, 5], [5, 5]],
+    shoulderSide: [2, 5],
+    armWidth: 1,
+    arm: ['navy', 'fur', 'skin'],
+    band: true,
+  },
+});
 const ARM_LEN = 4;
+// Round shields in the team colour with a dark rim and an iron boss (front, side, back)
+const shieldGrid = (rows) => rows.flatMap((row, y) => [...row].flatMap((c, x) => (
+  c === '.' ? [] : [[x, y, { R: 'shieldRim', T: 'team', M: 'metal' }[c]]])));
+const SHIELD = shieldGrid(['.RRR.', 'RTTTR', 'RTMTR', 'RTTTR', '.RTR.', '..R..']);
+const SHIELD_SIDE = shieldGrid(['.RR', 'RTT', 'RMT', 'RTT', 'RTT', '.RR']);
+const SHIELD_BACK = shieldGrid(['.RR.', 'RRRR', 'RRRR', '.RR.']);
 
 const rad = (deg) => (deg * Math.PI) / 180;
 // Angle convention: 0 = straight down, 90 = forward (+x), 180 = straight up
@@ -334,6 +481,19 @@ const TOOLS = {
     head: grid(['..TT', '.TPP', 'TPPP', 'TPPP']).map(([x, y, k]) => [3 - y, -x, k]),
   },
   knife: { handle: 1, head: [[1, 0, 'metal'], [2, 0, 'metal'], [3, 0, 'metalDark']] },
+  // Spear: long shaft held a third of the way up, a leaf-shaped iron head
+  spear: {
+    handle: 8, back: 3,
+    head: [[1, 0, 'metal'], [2, 0, 'metal'], [3, 0, 'metalDark'], [1, -1, 'metalDark'], [1, 1, 'metalDark']],
+  },
+  // Bow held at its grip: limbs along the handle axis curving back at the tips, the string behind
+  bow: {
+    handle: 0,
+    head: [
+      [-4, 1, 'wood'], [-3, 0, 'wood'], [-2, 0, 'wood'], [-1, 0, 'wood'], [0, 0, 'wood'], [1, 0, 'wood'], [2, 0, 'wood'], [3, 0, 'wood'], [4, 1, 'wood'],
+      [-3, 2, 'bowString'], [-2, 2, 'bowString'], [-1, 2, 'bowString'], [0, 2, 'bowString'], [1, 2, 'bowString'], [2, 2, 'bowString'], [3, 2, 'bowString'],
+    ],
+  },
 };
 // Carried loads, drawn in front of the chest (reference coords, relative to the body bob)
 const LOADS = {
@@ -470,9 +630,12 @@ function renderPose(basePose, colors, view, hair, body) {
     drawPoncho('side');
     const headY = bob + (pose.head ?? 0);
     for (const [x, y, k] of [...(body.face?.side ?? FACE_SIDE), ...(pose.blink ? BLINK_SIDE : []), ...hairPixels('side')]) put(x, y + headY, k);
+    if (pose.shout) put(3, 3 + headY, 'mouth');
     drawLoad(LOAD_SIDE_DX);
     if (!ponchoOver) frontArm();
     drawTool(frontHand);
+    // Shield held out in front of the body, over the spear shaft
+    if (body.shield) for (const [x, y, k] of SHIELD_SIDE) put(x + 4, y + 5 + bob - (pose.shieldUp ? 2 : 0), k);
     drawGust();
     if (twoHanded) put(...grip(frontHand), 'skin');
     return buf;
@@ -493,6 +656,8 @@ function renderPose(basePose, colors, view, hair, body) {
   for (const [pixels, lift, dx] of [[legL, liftL, -stance], [legR, liftR, stance]]) {
     for (const [x, y, k] of pixels) if (y < 10 || y - lift >= 10) put(x + dx * (y - 9) / 4, y - lift, k);
   }
+  // From behind, the shield hangs on the left arm, half hidden by the body
+  if (back && body.shield) for (const [x, y, k] of SHIELD_BACK) put(x + handL[0] - 1, y + handL[1] - 2 - (pose.shieldUp ? 2 : 0), k);
   for (const [x, y, k] of back ? body.torsoBack : body.torso) put(x, y + bob, k);
   const arms = () => {
     if (twoHanded) lineTo(SHOULDER_L[0], SHOULDER_L[1] + bob, ...grip(hand), body.arm);
@@ -506,8 +671,10 @@ function renderPose(basePose, colors, view, hair, body) {
   const face = back ? body.face?.back ?? FACE_BACK : body.face?.front ?? FACE;
   const head = back ? [...face, ...hairPixels('back')] : [...face, ...(pose.blink ? BLINK : []), ...hairPixels('front')];
   for (const [x, y, k] of head) put(x, y + headY, k);
+  if (pose.shout && !back) put(2, 3 + headY, 'mouth');
   if (!ponchoOver) arms();
   if (!back) {
+    if (body.shield) for (const [x, y, k] of SHIELD) put(x + handL[0] - 2, y + handL[1] - 3 - (pose.shieldUp ? 2 : 0), k);
     drawTool(hand);
     drawToolL(handL);
     drawGust();
@@ -726,17 +893,232 @@ const toFire = { windWhite: 'fireYellow', windBlue: 'fireOrange', windGray: 'fir
 const fireGusts = (anims) => Object.fromEntries(Object.entries(anims).map(([name, poses]) => [name, poses.map((p) => (
   p.gust ? { ...p, gust: p.gust.map(([x, y, k]) => [x, y, toFire[k] ?? k]) } : p))]));
 
+// Earth and water casting. Shaped material is drawn as `gust` pixels in rock/dust or water/ice colours
+const RK = 'rock';
+const RL = 'rockLight';
+const RD = 'rockDark';
+const DU = 'dust';
+// A chunk of rock 2-3 px around (x, y)
+const chunk = (x, y, big = false) => [[x, y, RK], [x + 1, y, RL], [x, y + 1, RD], [x + 1, y + 1, RK],
+  ...(big ? [[x - 1, y, RK], [x, y - 1, RL], [x + 1, y - 1, RK], [x - 1, y + 1, RD]] : [])];
+const dustAt = (x, y, n = 4) => Array.from({ length: n }, (_, i) => [x + (i % 2 ? i : -i), y - (i >> 1), DU]);
+
+// Brawler: fists up, rock-gauntlet punches that throw a chunk forward
+const FIST_ANIMATIONS = {
+  idle: [
+    { armR: 70, armL: -70, stance: 1 }, { armR: 70, armL: -70, stance: 1 },
+    { armR: 70, armL: -70, stance: 1, bob: 1 }, { armR: 70, armL: -70, stance: 1, bob: 1, blink: true },
+  ],
+  run: [
+    { liftL: 1, bob: 1, armL: 40, armR: -30, lean: 1 },
+    { armL: 10, armR: 10, lean: 1 },
+    { liftR: 1, bob: 1, armL: -30, armR: 40, lean: 1 },
+    { armL: 10, armR: 10, lean: 1 },
+  ],
+  attack: [
+    { armR: 140, armL: -60, stance: 1 },
+    { armR: 160, armL: -80, stance: 1, bob: 1 },
+    { armR: 90, armL: -30, stance: 2, lean: 2, gust: chunk(9, 4, true) },
+    { armR: 90, armL: -30, stance: 2, lean: 2, gust: [...chunk(12, 4), ...dustAt(9, 6, 3)] },
+    { armR: 60, armL: -60, stance: 1, bob: 1 },
+  ],
+};
+
+// Geomancer: stomp, raise a slab out of the ground, punch it forward
+const GEOMANCER_ANIMATIONS = {
+  idle: [
+    { armR: 30, armL: -30, stance: 1 }, { armR: 30, armL: -30, stance: 1 },
+    { armR: 30, armL: -30, stance: 1, bob: 1 }, { armR: 30, armL: -30, stance: 1, bob: 1, blink: true },
+  ],
+  run: VILLAGER_ANIMATIONS.run,
+  shoot: [
+    { liftR: 2, armR: 150, armL: -150 },
+    { bob: 1, stance: 2, armR: 170, armL: -170, gust: [...dustAt(-2, 13), ...dustAt(6, 13)] },
+    { stance: 2, armR: 110, armL: -110, gust: [...chunk(8, 11, true), ...dustAt(8, 13, 3)] },
+    { stance: 2, lean: 2, armR: 90, armL: 90, gust: chunk(10, 6, true) },
+    { stance: 1, lean: 1, armR: 80, armL: 60, gust: chunk(13, 6) },
+    { stance: 1, armR: 40, armL: -40 },
+  ],
+};
+
+// Surfers ride a slab the game draws under them: wide stance, arms out for balance, leaning into
+// the run; the attack jumps and slams back down. takeoff mirrors idle (shared with the flyer code)
+const surferIdle = [
+  { armR: 40, armL: -40, stance: 1 }, { armR: 40, armL: -40, stance: 1 },
+  { armR: 40, armL: -40, stance: 1, bob: 1 }, { armR: 40, armL: -40, stance: 1, bob: 1, blink: true },
+];
+const SURFER_ANIMATIONS = {
+  idle: surferIdle,
+  takeoff: surferIdle.slice(0, 3),
+  run: [
+    { stance: 2, lean: 2, armR: 100, armL: -70, side: { armR: 120, armL: -40 } },
+    { stance: 2, lean: 2, armR: 105, armL: -75, bob: 1, side: { armR: 125, armL: -45 } },
+    { stance: 2, lean: 2, armR: 100, armL: -70, side: { armR: 120, armL: -40 } },
+    { stance: 2, lean: 3, armR: 95, armL: -65, bob: 1, side: { armR: 115, armL: -35 } },
+  ],
+  attack: [
+    { bob: 2, stance: 2, armR: 20, armL: -20 },
+    { hover: 4, armR: 160, armL: -160, liftL: 1, liftR: 1 },
+    { hover: 5, armR: 170, armL: -170, liftL: 1, liftR: 1 },
+    { bob: 2, stance: 2, armR: 120, armL: -120, gust: [...chunk(-4, 12), ...chunk(7, 12), ...dustAt(1, 13, 6)] },
+    { bob: 1, stance: 1, armR: 60, armL: -60, gust: dustAt(1, 13, 4) },
+  ],
+};
+
+// The same poses in water: rock becomes ice and water, dust becomes spray
+const toWater = { rock: 'waterBlue', rockLight: 'iceWhite', rockDark: 'navy', dust: 'iceBlue' };
+const waterGusts = (anims) => Object.fromEntries(Object.entries(anims).map(([name, poses]) => [name, poses.map((p) => (
+  p.gust ? { ...p, gust: p.gust.map(([x, y, k]) => [x, y, toWater[k] ?? k]) } : p))]));
+
+// Water arc of `n` pixels around (cx, cy) from angle a0 to a1 (degrees, 0 = right, 90 = down)
+const arc = (cx, cy, r, a0, a1, n = 7) => Array.from({ length: n }, (_, i) => {
+  const a = rad(a0 + ((a1 - a0) * i) / (n - 1));
+  return [cx + Math.cos(a) * r, cy + Math.sin(a) * r, i % 3 === 0 ? 'iceWhite' : i % 3 === 1 ? 'waterBlue' : 'iceBlue'];
+});
+
+// Water warrior: a whip of water lashed out in an arc
+const WHIP_ANIMATIONS = {
+  idle: [
+    { armR: 50, armL: -30, gust: arc(9, 9, 2, 0, 180, 4) }, { armR: 50, armL: -30, gust: arc(9, 9, 2, 60, 240, 4) },
+    { armR: 50, armL: -30, bob: 1, gust: arc(9, 10, 2, 120, 300, 4) }, { armR: 50, armL: -30, bob: 1, blink: true, gust: arc(9, 10, 2, 180, 360, 4) },
+  ],
+  run: VILLAGER_ANIMATIONS.run,
+  attack: [
+    { armR: 160, armL: -40, stance: 1, gust: arc(6, -1, 3, 180, 360, 6) },
+    { armR: 120, armL: -40, stance: 1, gust: arc(8, 1, 5, 200, 320, 7) },
+    { armR: 80, armL: -30, stance: 2, lean: 1, gust: arc(8, 4, 6, 260, 400, 9) },
+    { armR: 60, armL: -30, stance: 2, lean: 1, gust: arc(9, 6, 6, 300, 450, 8) },
+    { armR: 40, armL: -30, stance: 1, gust: arc(9, 9, 4, 0, 120, 5) },
+  ],
+};
+
+// Hydromancer: an orb of water circles the hands; to attack it is drawn into a ring, frozen into a
+// shard and flung
+const HYDROMANCER_ANIMATIONS = {
+  idle: [0, 90, 180, 270].map((a, i) => ({
+    armR: 60, armL: -60, bob: i > 1 ? 1 : 0, blink: i === 3, gust: arc(2, 6, 4, a, a + 120, 4),
+  })),
+  run: VILLAGER_ANIMATIONS.run,
+  shoot: [
+    { armR: 130, armL: -130, gust: arc(2, 2, 5, 0, 300, 9) },
+    { armR: 160, armL: -160, bob: 1, gust: arc(2, -1, 5, 60, 420, 10) },
+    { armR: 120, armL: -120, gust: [[2, -2, 'iceWhite'], [2, -3, 'iceBlue'], [3, -2, 'iceBlue'], [1, -1, 'iceBlue']] },
+    { armR: 90, armL: 90, bob: 1, lean: 1, gust: [[9, 5, 'iceWhite'], [10, 5, 'iceWhite'], [11, 5, 'iceBlue'], [10, 4, 'iceBlue']] },
+    { armR: 80, armL: 60, gust: [[13, 5, 'iceWhite'], [14, 5, 'iceBlue'], [15, 5, 'iceBlue']] },
+    { armR: 40, armL: -40 },
+  ],
+};
+
+// Spearmen: each civilization's warrior gear with a round shield on the left arm and a spear
+Object.assign(BODIES, {
+  spearman: { ...BODIES.warrior, shield: true },
+  spearman_fire: { ...BODIES.warrior_fire, shield: true },
+  spearman_earth: { ...BODIES.warrior_earth, shield: true },
+  spearman_water: { ...BODIES.warrior_water, shield: true },
+});
+const spear = (angle) => ({ type: 'spear', angle });
+// Spearman: spear upright at rest; at a run it levels forward behind the shield; the thrust gathers
+// back (anticipation), lunges with the whole body (stretch), holds on the hit and recovers
+const SPEAR_ANIMATIONS = {
+  idle: [
+    { armR: 10, tool: spear(170) }, { armR: 10, tool: spear(170) },
+    { armR: 10, bob: 1, tool: spear(170) }, { armR: 10, bob: 1, blink: true, tool: spear(170) },
+  ],
+  run: [
+    { liftL: 1, bob: 1, armR: 60, armL: 20, lean: 1, tool: spear(40) },
+    { armR: 60, armL: 20, lean: 1, tool: spear(40) },
+    { liftR: 1, bob: 1, armR: 60, armL: 20, lean: 1, tool: spear(40) },
+    { armR: 60, armL: 20, lean: 1, tool: spear(40) },
+  ],
+  attack: [
+    { armR: 70, armL: 30, stance: 1, tool: spear(25) },
+    { armR: 45, armL: 40, stance: 2, bob: 1, lean: -1, tool: spear(45), shieldUp: true },
+    { armR: 95, armL: 30, stance: 2, lean: 3, tool: spear(-5) },
+    { armR: 100, armL: 25, stance: 2, lean: 3, tool: spear(-10) },
+    { armR: 80, armL: 30, stance: 1, lean: 1, tool: spear(10) },
+    { armR: 65, armL: 30, stance: 1, tool: spear(25) },
+  ],
+};
+
+// Battle cry before a fight: weapons and arms thrown up, mouth open, a little hop on the beat.
+// Built from a rig's idle pose so every soldier keeps its own gear.
+function withCheer(animations, ponchos = false) {
+  const base = { ...animations.idle[0] };
+  delete base.gust;
+  const up = (armR, armL, bob, extra = {}) => ({
+    ...base, armR, armL, bob, shout: true, shieldUp: true,
+    ...(base.tool ? { tool: { ...base.tool, angle: 0, twoHanded: false } } : {}),
+    ...(base.toolL ? { toolL: { ...base.toolL, angle: 0 } } : {}),
+    ...(ponchos ? { armsOver: true, poncho: bob ? 'wide' : 'open' } : {}),
+    ...extra,
+  });
+  return { ...animations, cheer: [up(150, -150, 0), up(172, -172, 1, { head: -1 }), up(158, -158, 0), up(176, -176, 1, { head: -1 })] };
+}
+
+// Bowmen: every civilization's villager clothes under a hood in the team colour
+const HOOD = Object.fromEntries(['male', 'female'].map((style) => [style, {
+  front: grid(['.TTT.', 'T...T', 'T...T']),
+  side: grid(['TTTT.', 'TT...', 'TT...', '.T...']),
+  back: grid(['.TTT.', 'TTTTT', 'TTTTT', 'TTTTT', '.TTT.']),
+}]));
+Object.assign(BODIES, {
+  bowman: { ...BODIES.villager, hair: HOOD },
+  bowman_fire: { ...BODIES.villager_fire, hair: HOOD },
+  bowman_earth: { ...BODIES.villager_earth, hair: HOOD },
+  bowman_water: { ...BODIES.villager_water },
+});
+const bow = (angle) => ({ type: 'bow', angle });
+const arrow = (x, y = 5) => [[x, y, 'wood'], [x + 1, y, 'wood'], [x + 2, y, 'wood'], [x + 3, y, 'metal']];
+// Bowman: bow down at the side; raises it, nocks an arrow, draws the string and looses
+const BOW_ANIMATIONS = {
+  idle: [
+    { armR: 10, tool: bow(0) }, { armR: 10, tool: bow(0) },
+    { armR: 10, bob: 1, tool: bow(0) }, { armR: 10, bob: 1, blink: true, tool: bow(0) },
+  ],
+  run: [
+    { liftL: 1, bob: 1, armL: 30, armR: 20, tool: bow(-10) },
+    { armL: 0, armR: 20, tool: bow(-10) },
+    { liftR: 1, bob: 1, armL: -30, armR: 20, tool: bow(-10) },
+    { armL: 0, armR: 20, tool: bow(-10) },
+  ],
+  shoot: [
+    { armR: 70, armL: 40, tool: bow(70) },
+    { armR: 90, armL: 70, tool: bow(90), gust: arrow(4) },
+    { armR: 90, armL: 80, bob: 1, stance: 1, tool: bow(90), gust: arrow(3) },
+    { armR: 90, armL: 40, stance: 1, tool: bow(90), gust: arrow(10) },
+    { armR: 80, armL: 20, tool: bow(80), gust: arrow(15) },
+    { armR: 40, armL: 10, tool: bow(30) },
+  ],
+};
+
 const RIGS = {
   villager: { body: BODIES.villager, animations: VILLAGER_ANIMATIONS },
-  warrior: { body: BODIES.warrior, animations: WARRIOR_ANIMATIONS },
-  air: { body: BODIES.air, animations: AIR_ANIMATIONS },
-  flyer: { body: BODIES.flyer, animations: FLYER_ANIMATIONS },
+  warrior: { body: BODIES.warrior, animations: withCheer(WARRIOR_ANIMATIONS) },
+  air: { body: BODIES.air, animations: withCheer(AIR_ANIMATIONS) },
+  flyer: { body: BODIES.flyer, animations: withCheer(FLYER_ANIMATIONS, true) },
   // Fire civilization variants (units without one fall back to the air art)
   villager_fire: { body: BODIES.villager_fire, animations: VILLAGER_ANIMATIONS },
-  warrior_fire: { body: BODIES.warrior_fire, animations: DUAL_ANIMATIONS },
-  air_fire: { body: BODIES.air_fire, animations: MAGE_ANIMATIONS },
-  flyer_fire: { body: BODIES.flyer_fire, animations: fireGusts(FLYER_ANIMATIONS) },
+  warrior_fire: { body: BODIES.warrior_fire, animations: withCheer(DUAL_ANIMATIONS) },
+  air_fire: { body: BODIES.air_fire, animations: withCheer(MAGE_ANIMATIONS) },
+  flyer_fire: { body: BODIES.flyer_fire, animations: withCheer(fireGusts(FLYER_ANIMATIONS), true) },
+  // Earth and water civilizations
+  villager_earth: { body: BODIES.villager_earth, animations: VILLAGER_ANIMATIONS },
+  warrior_earth: { body: BODIES.warrior_earth, animations: withCheer(FIST_ANIMATIONS) },
+  air_earth: { body: BODIES.air_earth, animations: withCheer(GEOMANCER_ANIMATIONS) },
+  flyer_earth: { body: BODIES.flyer_earth, animations: withCheer(SURFER_ANIMATIONS, true) },
+  villager_water: { body: BODIES.villager_water, animations: VILLAGER_ANIMATIONS },
+  warrior_water: { body: BODIES.warrior_water, animations: withCheer(WHIP_ANIMATIONS) },
+  air_water: { body: BODIES.air_water, animations: withCheer(HYDROMANCER_ANIMATIONS) },
+  flyer_water: { body: BODIES.flyer_water, animations: withCheer(waterGusts(SURFER_ANIMATIONS), true) },
   monk: { body: BODIES.monk, animations: MONK_ANIMATIONS },
+  bowman: { body: BODIES.bowman, animations: withCheer(BOW_ANIMATIONS) },
+  bowman_fire: { body: BODIES.bowman_fire, animations: withCheer(BOW_ANIMATIONS) },
+  bowman_earth: { body: BODIES.bowman_earth, animations: withCheer(BOW_ANIMATIONS) },
+  bowman_water: { body: BODIES.bowman_water, animations: withCheer(BOW_ANIMATIONS) },
+  spearman: { body: BODIES.spearman, animations: withCheer(SPEAR_ANIMATIONS) },
+  spearman_fire: { body: BODIES.spearman_fire, animations: withCheer(SPEAR_ANIMATIONS) },
+  spearman_earth: { body: BODIES.spearman_earth, animations: withCheer(SPEAR_ANIMATIONS) },
+  spearman_water: { body: BODIES.spearman_water, animations: withCheer(SPEAR_ANIMATIONS) },
 };
 export const RIG_NAMES = Object.keys(RIGS);
 

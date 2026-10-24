@@ -79,10 +79,33 @@ const NEUTRAL_MIN_DISTANCE = 24; // neutral resources stay this far from bases a
 // Rivers: one running across the map and one running down it, between the bases and the centre,
 // crossable only over their bridges
 const RIVER_WIDTH = 2;
+const SPIRIT_RIVER_WIDTH = 4; // the spirit dimension's chasms are wider
 const RIVER_POSITIONS = [0.28, 0.29, 0.3, 0.7, 0.71, 0.72]; // middle line, as a fraction of the map side
 const RIVER_BRIDGES = 4;
 const BRIDGE_WIDTH = 2;
 const RIVER_CLEARANCE = 11; // rivers stay this far from bases and the centre
+// Spirit dimension: crystal outcrops (impassable). The same ones at every base, in base-relative
+// spots like the mines (angle from the direction to the map centre, distance in tiles), and neutral
+// ones on the ring between neighbouring bases and further in toward the centre; `r` = blob radius
+const BASE_CRYSTALS = [
+  { r: 7.5, angle: 0.95, distance: 31 }, // a crystal mountain off to one side, toward the middle
+  { r: 3.2, angle: -0.95, distance: 31 }, // a crag on the other side
+  { r: 1.2, angle: -1.6, distance: 22 }, // small ones scattered around the base
+  { r: 1.1, angle: Math.PI, distance: 13 },
+  { r: 1.3, angle: 2.2, distance: 19 },
+  { r: 1.0, angle: -2.5, distance: 17 },
+];
+// `shift`: fraction of the gap between the two bases to turn the spot by (the same at every gap)
+const NEUTRAL_CRYSTALS = [
+  { r: 8.5, ring: 1 }, // a crystal mountain between two bases, on the ring the bases stand on
+  { r: 3.4, ring: 0.74, shift: 0.18 }, // crags further in
+  { r: 1.3, ring: 0.52 }, // further in, between the bases' lanes to the centre
+  { r: 2.6, ring: 1.36, shift: -0.12 }, // out toward the map's edge
+  { r: 1.2, ring: 0.9, shift: -0.3 },
+  { r: 1.2, ring: 1.15, shift: 0.32 },
+];
+const CRYSTAL_RIVER_GAP = 3; // tiles kept between crystals and rivers
+const CRYSTAL_GAP = 2; // ... and between two outcrops
 const TREE_CUT_COST = 8; // how much a road prefers going around a forest over cutting through it
 const BASE_TREE_CUT_COST = 200; // a base's own trees are only cut when there is no other way, to keep starts fair
 
@@ -92,9 +115,11 @@ const BASE_TREE_CUT_COST = 200; // a base's own trees are only cut when there is
  * @param {number} size map side in tiles
  * @param {{x: number, y: number}[]} spawnPoints world coordinates of each town center
  * @param {{x: number, y: number}[]} clearPoints extra spots kept free of trees and sand (e.g. the central town center)
+ * @param {{theme?: string}} options `theme: 'spirit'` widens the rivers and adds crystal outcrops
  * @returns {{ seed, tiles: number[], resources: {id, type, variant, tx, ty, x, y, amount, max}[] }}
  */
-export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
+export function generateWorld(seed, size, spawnPoints, clearPoints = [], { theme = 'classic' } = {}) {
+  const spirit = theme === 'spirit';
   const rng = mulberry32(seed);
   const noise = createPerlin(rng);
   const height = (tx, ty) => noise(tx * NOISE_SCALE, ty * NOISE_SCALE) * 0.75 + noise(tx * NOISE_SCALE * 2, ty * NOISE_SCALE * 2) * 0.25;
@@ -109,7 +134,7 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
   const inMap = (tx, ty) => tx >= 0 && ty >= 0 && tx < size && ty < size;
   const tileAt = (tx, ty) => tiles[ty * size + tx];
   const isWet = (tx, ty) => tileAt(tx, ty) === Terrain.WATER || tileAt(tx, ty) === Terrain.BRIDGE;
-  const isFree = (tx, ty) => inMap(tx, ty) && !resourceAt.has(`${tx},${ty}`) && !isWet(tx, ty);
+  const isFree = (tx, ty) => inMap(tx, ty) && !resourceAt.has(`${tx},${ty}`) && !isWet(tx, ty) && tileAt(tx, ty) !== Terrain.CRYSTAL;
   const nearBridge = new Set(); // tiles at either end of a bridge are kept free of resources
   const canGrow = (tx, ty) => isFree(tx, ty) && !nearBridge.has(`${tx},${ty}`) && distToClear(tx, ty) > SPAWN_CLEAR_RADIUS;
   const randomTile = () => [Math.floor(rng() * size), Math.floor(rng() * size)];
@@ -125,6 +150,7 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
 
   // ---- Rivers ----
   // A sine-shaped river. Along the river, `u` is the coordinate it flows along and `v` the one across.
+  const riverWidth = spirit ? SPIRIT_RIVER_WIDTH : RIVER_WIDTH;
   const addRiver = (axis) => {
     const cell = (u, v) => (axis === 'x' ? [u, v] : [v, u]);
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -136,8 +162,8 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
       // Each column spans from its own middle to the previous one's so the river has no diagonal gaps
       const columns = [];
       for (let u = 0; u < size; u++) {
-        const lo = Math.min(middle(u), middle(Math.max(0, u - 1))) - Math.floor(RIVER_WIDTH / 2);
-        const hi = Math.max(middle(u), middle(Math.max(0, u - 1))) + Math.ceil(RIVER_WIDTH / 2) - 1;
+        const lo = Math.min(middle(u), middle(Math.max(0, u - 1))) - Math.floor(riverWidth / 2);
+        const hi = Math.max(middle(u), middle(Math.max(0, u - 1))) + Math.ceil(riverWidth / 2) - 1;
         columns.push([lo, hi]);
       }
       const cells = columns.flatMap(([lo, hi], u) => Array.from({ length: hi - lo + 1 }, (_, k) => cell(u, lo + k)));
@@ -168,10 +194,13 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
   addRiver('x');
   addRiver('y');
 
+  const center = size / 2;
+  if (spirit) addCrystals();
+
   // Sand roads (cosmetic)
   for (let ty = 0; ty < size; ty++) {
     for (let tx = 0; tx < size; tx++) {
-      if (!isWet(tx, ty) && Math.abs(height(tx, ty)) < ROAD_WIDTH && distToClear(tx, ty) > SPAWN_CLEAR_RADIUS) {
+      if (!isWet(tx, ty) && tileAt(tx, ty) !== Terrain.CRYSTAL && Math.abs(height(tx, ty)) < ROAD_WIDTH && distToClear(tx, ty) > SPAWN_CLEAR_RADIUS) {
         tiles[ty * size + tx] = Terrain.SAND;
       }
     }
@@ -233,7 +262,6 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
   };
 
   // ---- Fair resources around every base ----
-  const center = size / 2;
   const minesPlaced = BASE_MINES.map(() => []); // per mine: the cells placed for each base
   spawnTiles.forEach((s, index) => {
     base = index;
@@ -354,7 +382,7 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
         for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
           const nx = cx + dx;
           const ny = cy + dy;
-          if (!inMap(nx, ny) || tileAt(nx, ny) === Terrain.WATER) continue;
+          if (!inMap(nx, ny) || tileAt(nx, ny) === Terrain.WATER || tileAt(nx, ny) === Terrain.CRYSTAL) continue;
           const r = resourceAt.get(`${nx},${ny}`);
           if (r && r.type !== ResourceType.WOOD && r.type !== ResourceType.FOOD) continue;
           const isTree = r?.type === ResourceType.WOOD && r.variant !== 'bush';
@@ -373,4 +401,95 @@ export function generateWorld(seed, size, spawnPoints, clearPoints = []) {
   }
 
   return { seed, tiles, resources: [...resourceAt.values()] };
+
+  // ---- Crystal outcrops (spirit dimension) ----
+  // Every outcrop is placed at all bases (or between every pair of neighbouring bases) or at none, so
+  // the map stays fair; each is nudged around its spot until its whole blob fits on open ground away
+  // from rivers, bridges, bases and the centre without cutting any base off from the others
+  function addCrystals() {
+    const spawnAngles = spawnTiles.map((s) => Math.atan2(s.ty - center, s.tx - center));
+    const ringRadius = spawnTiles.length
+      ? spawnTiles.reduce((sum, s) => sum + Math.hypot(s.tx - center, s.ty - center), 0) / spawnTiles.length
+      : size * 0.36;
+    const wetNear = (tx, ty, d) => {
+      for (let y = ty - d; y <= ty + d; y++)
+        for (let x = tx - d; x <= tx + d; x++) if (inMap(x, y) && isWet(x, y)) return true;
+      return false;
+    };
+    const crystalNear = (tx, ty, d) => {
+      for (let y = ty - d; y <= ty + d; y++)
+        for (let x = tx - d; x <= tx + d; x++) if (inMap(x, y) && tileAt(x, y) === Terrain.CRYSTAL) return true;
+      return false;
+    };
+    // Cells of a slightly irregular, turned elliptical blob around (cx, cy)
+    const blob = (cx, cy, r) => {
+      const turn = rng() * Math.PI, sx = 0.8 + rng() * 0.4, sy = 0.8 + rng() * 0.4;
+      const cells = [];
+      const reach = Math.ceil(r * 1.3);
+      for (let y = Math.round(cy) - reach; y <= Math.round(cy) + reach; y++)
+        for (let x = Math.round(cx) - reach; x <= Math.round(cx) + reach; x++) {
+          const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+          const u = (dx * Math.cos(turn) + dy * Math.sin(turn)) / sx, v = (-dx * Math.sin(turn) + dy * Math.cos(turn)) / sy;
+          if (Math.hypot(u, v) <= r) cells.push([x, y]);
+        }
+      return cells;
+    };
+    // Every base and the centre can still reach the first base (4-connected, rivers crossed on bridges)
+    const connected = () => {
+      if (clearTiles.length < 2) return true;
+      const seen = new Uint8Array(size * size);
+      const queue = [clearTiles[0].ty * size + clearTiles[0].tx];
+      seen[queue[0]] = 1;
+      for (let q = 0; q < queue.length; q++) {
+        const cur = queue[q], cx = cur % size, cy = (cur - cx) / size;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx, ny = cy + dy, ni = ny * size + nx;
+          if (!inMap(nx, ny) || seen[ni] || tileAt(nx, ny) === Terrain.WATER || tileAt(nx, ny) === Terrain.CRYSTAL) continue;
+          seen[ni] = 1;
+          queue.push(ni);
+        }
+      }
+      return clearTiles.every((t) => seen[t.ty * size + t.tx]);
+    };
+    // Tries to put an outcrop of radius r near (cx, cy) (polar nudges around it); returns its cells
+    const place = (cx, cy, r, minClear) => {
+      for (let tries = 0; tries < 60; tries++) {
+        const a = tries * 2.4, d = Math.sqrt(tries) * 1.2 * Math.max(1, r / 3); // big ones may wander further
+        const cells = blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d, r);
+        const ok = cells.length && cells.every(([x, y]) => x >= 2 && y >= 2 && x < size - 2 && y < size - 2
+          && !nearBridge.has(`${x},${y}`) && !wetNear(x, y, CRYSTAL_RIVER_GAP) && !crystalNear(x, y, CRYSTAL_GAP)
+          && distToClear(x, y) > minClear);
+        if (!ok) continue;
+        for (const [x, y] of cells) tiles[y * size + x] = Terrain.CRYSTAL;
+        if (connected()) return cells;
+        for (const [x, y] of cells) tiles[y * size + x] = Terrain.GRASS;
+      }
+      return null;
+    };
+    const keepAllOrNone = (placed) => {
+      if (placed.every(Boolean)) return true;
+      for (const cells of placed) for (const [x, y] of cells ?? []) tiles[y * size + x] = Terrain.GRASS;
+      return false;
+    };
+    // An outcrop that doesn't fit at every spot is tried again a size smaller
+    const SHRINK = [1, 0.8, 0.62, 0.48];
+    for (const { r, angle, distance } of BASE_CRYSTALS) {
+      SHRINK.some((k) => keepAllOrNone(spawnTiles.map((s) => {
+        const a = Math.atan2(center - s.ty, center - s.tx) + angle;
+        return place(s.tx + 0.5 + Math.cos(a) * distance, s.ty + 0.5 + Math.sin(a) * distance, r * k, 9);
+      })));
+    }
+    // Neutral ones halfway (in angle) between each pair of neighbouring bases
+    const sorted = [...spawnAngles].sort((a, b) => a - b);
+    const between = sorted.length > 1
+      ? sorted.map((a, i) => (i + 1 < sorted.length ? (a + sorted[i + 1]) / 2 : (a + sorted[0] + Math.PI * 2) / 2))
+      : sorted.map((a) => a + Math.PI);
+    const gap = sorted.length > 1 ? (Math.PI * 2) / sorted.length : Math.PI;
+    for (const { r, ring, shift = 0 } of NEUTRAL_CRYSTALS) {
+      SHRINK.some((k) => keepAllOrNone(between.map((b) => {
+        const a = b + shift * gap;
+        return place(center + Math.cos(a) * ringRadius * ring, center + Math.sin(a) * ringRadius * ring, r * k, 16);
+      })));
+    }
+  }
 }

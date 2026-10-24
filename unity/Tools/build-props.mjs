@@ -10,7 +10,7 @@
 // which the game swaps for the player's colour. Model units are tiles; front is +z.
 // Run from the repo root: node unity/Tools/build-props.mjs
 import { writeFileSync } from 'node:fs';
-import { hex, team, isTeam, hash, norm, sub, cross, centroid, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, midPivot, AGE_SUFFIX, ageTris, ageTint } from './model-kit.mjs';
+import { hex, team, isTeam, hash, norm, sub, cross, centroid, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, midPivot, AGE_SUFFIX, ageTris, ageTint, useDensity, fineRock } from './model-kit.mjs';
 
 const OUT = (name) => new URL(`../Assets/Resources/models/${name}.bytes`, import.meta.url);
 const PREVIEW = (name) => new URL(`models/${name}_paint.png`, import.meta.url);
@@ -139,6 +139,7 @@ function build(name, regions, mesh, label, strength = 0.7, atlas = ATLAS, ages =
     const file = name + AGE_SUFFIX[age];
     const tris = ageTris(mesh.tris, age);
     if (age === 3) tris.push(...ageBanners(tris, mesh.part));
+    useDensity(name, tris, D);
     const rgba = paintAtlas(atlas, regions);
     const faces = projectFaces(tris, regions, D, atlas, label);
     const extra = parts.map((part) => ({ name: part.name, ...projectFaces(ageTris(part.mesh.tris, age), regions, D, atlas, label) }));
@@ -169,24 +170,12 @@ function ageBanners(tris, part) {
 
 // ---------- Resources ----------
 
-const ROCK = { base: hex(0x7d7468), light: hex(0x9a9184), dark: hex(0x5a5249), crack: hex(0x3f3933) };
+const ROCK = { base: hex(0x7d7468), light: hex(0x9a9184), dark: hex(0x5a5249), crack: hex(0x3f3933), high: hex(0xb3aa9c) };
 const GOLD = { base: hex(0xffd34d), light: hex(0xfff3b0), dark: hex(0xc99a2e) };
-const STONE = { base: hex(0xa9a69c), light: hex(0xcac7bd), dark: hex(0x7e7b72), crack: hex(0x5d5a53) };
+const STONE = { base: hex(0xa9a69c), light: hex(0xcac7bd), dark: hex(0x7e7b72), crack: hex(0x5d5a53), high: hex(0xe0ddd4) };
 
-// Flat colour with a few 2x2 highlights (and gold flecks): simple pixel art, no normal map
-function rockPaint(p, veins) {
-  return (r) => {
-    r.fill(0, 0, r.w, r.h, p.base);
-    r.fill(0, 0, r.w, 1, p.dark);
-    for (let y = 1; y < r.h; y += 3)
-      for (let x = (y % 2) * 2; x < r.w; x += 4) {
-        const n = hash(x, y);
-        if (veins && n < 0.3) r.fill(x, y, 2, 2, GOLD.base);
-        else if (n > 0.8) r.fill(x, y, 2, 1, p.light);
-        else if (n < 0.3) r.set(x, y, p.dark);
-      }
-  };
-}
+// Cliff-like rock (model-kit fineRock), veined with gold for the mines
+const rockPaint = (p, veins) => fineRock({ ...p, high: p.high, vein: veins ? GOLD.base : null, veinLight: GOLD.light }, veins ? 5 : 6);
 
 function goldPaint(r) {
   r.fill(0, 0, r.w, r.h, GOLD.base);
@@ -200,23 +189,42 @@ function blockPaint(r) {
   r.fill(0, r.h - 1, r.w, 1, STONE.light);
 }
 
-// Rock plate: a rectangular block turned by `yaw`, its top a little narrower and tilted (flat faces)
-function slab(m, cx, cz, hw, hd, h, yaw, tilt, region) {
+// Low-poly rock with a flat top: a jittered ring on the ground, a bulging shoulder half way up and a
+// narrower top face, tilted a little (every face flat, no box corners)
+function lowRock(m, cx, cz, r, h, seed, region, sides = 7, y0 = 0) {
   m.part++;
-  const c = Math.cos(yaw), s = Math.sin(yaw);
-  const ring = (w, d, y, k) => [[w, d], [-w, d], [-w, -d], [w, -d]].map(([x, z]) => [cx + x * c - z * s, y + x * k, cz + x * s + z * c]);
-  const lo = ring(hw, hd, 0, 0), hi = ring(hw * 0.82, hd * 0.8, h, tilt);
-  m.band(lo, hi, [cx, 0, cz], () => region);
-  m.cap(hi, region);
+  const rnd = (k) => hash(seed * 37 + k, seed * 11 + k * 13);
+  const turn = rnd(0) * Math.PI * 2;
+  const radii = Array.from({ length: sides }, (_, i) => 0.82 + rnd(i + 1) * 0.36);
+  const angles = Array.from({ length: sides }, (_, i) => turn + ((i + (rnd(i + 30) - 0.5) * 0.5) / sides) * Math.PI * 2);
+  const tx = (rnd(60) - 0.5) * 0.5, tz = (rnd(61) - 0.5) * 0.5; // top tilt, height per unit across
+  const ring = (y, s, tilt) => angles.map((a, i) => {
+    const x = Math.cos(a) * r * s * radii[i], z = Math.sin(a) * r * s * radii[i];
+    return [cx + x, y0 + y + (tilt ? (x * tx + z * tz) * h / r : 0), cz + z];
+  });
+  const lo = ring(0, 1, false), mid = ring(h * (0.45 + rnd(62) * 0.15), 1.06, false), top = ring(h, 0.62, true);
+  const center = [cx, 0, cz];
+  m.band(lo, mid, center, () => region);
+  for (let i = 0; i < sides; i++) {
+    const j = (i + 1) % sides;
+    const c = centroid(mid[i], mid[j], top[i], top[j]);
+    const out = norm([c[0] - cx, 0.7, c[2] - cz]);
+    m.tri(mid[i], mid[j], top[j], region, out);
+    m.tri(mid[i], top[j], top[i], region, out);
+  }
+  m.cap(top, region);
 }
 
 function goldPile(variant) {
   const m = new MeshBuilder();
   const r = (k) => hash(variant * 13 + k, k * 7);
-  slab(m, -0.1, -0.08, 0.3, 0.2, 0.34, 0.3 + r(1) * 0.5, 0.15, 'rock');
-  slab(m, 0.2, 0.12, 0.17, 0.13, 0.22, -0.4 + r(2) * 0.6, -0.12, 'rock');
-  slab(m, -0.02, 0.3, 0.09, 0.06, 0.08, r(3) * 2, 0.1, 'gold');
-  slab(m, 0.2, 0.36, 0.07, 0.05, 0.06, r(4) * 2, -0.1, 'gold');
+  // A big rock shot with gold, a smaller one beside it and gold nuggets lying around
+  lowRock(m, -0.08, -0.06, 0.27, 0.32, variant * 10 + 1, 'rock', 7);
+  lowRock(m, 0.22, 0.12, 0.15, 0.2, variant * 10 + 2, 'rock', 6);
+  lowRock(m, -0.02 + r(3) * 0.06, 0.3, 0.085, 0.08, variant * 10 + 3, 'gold', 5);
+  lowRock(m, 0.2, 0.34, 0.065, 0.06, variant * 10 + 4, 'gold', 5);
+  lowRock(m, -0.3, 0.2, 0.06, 0.055, variant * 10 + 5, 'gold', 5);
+  lowRock(m, -0.1 + r(5) * 0.04, -0.08, 0.09, 0.07, variant * 10 + 6, 'gold', 5, 0.28); // a nugget on top
   build(`gold_${variant}`, {
     rock: { w: 16, h: 16, paint: rockPaint(ROCK, true) },
     gold: { w: 6, h: 6, paint: goldPaint },
@@ -226,11 +234,11 @@ function goldPile(variant) {
 function stonePile(variant) {
   const m = new MeshBuilder();
   const r = (k) => hash(variant * 17 + k, k * 5 + 3);
-  // A wide flat plate, a thinner one leaning on it and a quarried block
-  slab(m, -0.08, -0.06, 0.34, 0.24, 0.2, 0.2 + r(1) * 0.4, 0.06, 'stone');
-  slab(m, -0.04, -0.1, 0.22, 0.16, 0.38, -0.3 + r(2) * 0.6, 0.18, 'stone');
-  slab(m, 0.26, 0.16, 0.15, 0.1, 0.16, r(3) * 2, -0.08, 'stone');
-  box(m, 0.04 + (variant - 2) * 0.05, 0, 0.33, 0.1, 0.07, 0.12, () => 'block', 'block');
+  // A wide, low rock, a taller one leaning against it and a couple of loose stones
+  lowRock(m, -0.1, -0.08, 0.3, 0.2, variant * 10 + 21, 'stone', 8);
+  lowRock(m, 0.0, -0.12, 0.2, 0.36 + r(1) * 0.06, variant * 10 + 22, 'stone', 6);
+  lowRock(m, 0.25, 0.16, 0.14, 0.15, variant * 10 + 23, 'stone', 6);
+  lowRock(m, 0.04 + (variant - 2) * 0.05, 0.33, 0.08, 0.08, variant * 10 + 24, 'block', 5);
   build(`stone_${variant}`, {
     stone: { w: 16, h: 16, paint: rockPaint(STONE, false) },
     block: { w: 6, h: 6, paint: blockPaint },

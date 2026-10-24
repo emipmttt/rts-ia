@@ -22,6 +22,8 @@ namespace RTS
             ["iceThrow"] = new Sound { files = new[] { "ice_throw_1", "ice_throw_2" }, volume = 0.26f, gap = 0.12f },
             ["freeze"] = new Sound { files = new[] { "ice_freeze_1", "ice_freeze_2" }, volume = 0.22f, gap = 0.3f },
             ["wave"] = new Sound { files = new[] { "wave_1", "wave_2" }, volume = 0.35f, gap = 0.2f },
+            ["splash"] = new Sound { files = new[] { "splash_1", "splash_2", "splash_3", "splash_4" }, volume = 0.32f, gap = 0.09f },
+            ["wade"] = new Sound { files = new[] { "wade_1", "wade_2", "wade_3" }, volume = 0.16f, gap = 0.12f },
             ["waterspray"] = new Sound { files = new[] { "waterspray_1", "waterspray_2" }, volume = 0.22f, gap = 0.12f },
             ["rockThrow"] = new Sound { files = new[] { "rock_throw_1", "rock_throw_2" }, volume = 0.3f, gap = 0.15f },
             ["rockWall"] = new Sound { files = new[] { "rock_wall_1", "rock_wall_2" }, volume = 0.32f, gap = 0.15f },
@@ -51,6 +53,8 @@ namespace RTS
             ["defeat"] = new Sound { files = new[] { "defeat" }, volume = 0.6f, gap = 1 },
             ["click"] = new Sound { files = new[] { "ui_click" }, volume = 0.3f, gap = 0.05f },
             ["hover"] = new Sound { files = new[] { "ui_hover" }, volume = 0.12f, gap = 0.06f, rate = 1.4f },
+            ["order"] = new Sound { files = new[] { "order_1", "order_2", "order_3" }, volume = 0.3f, gap = 0.06f },
+            ["orderAttack"] = new Sound { files = new[] { "order_attack_1", "order_attack_2" }, volume = 0.32f, gap = 0.06f },
             ["place"] = new Sound { files = new[] { "ui_place" }, volume = 0.4f, gap = 0.1f },
         };
         const float AmbientVolume = 0.18f;

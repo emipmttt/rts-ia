@@ -5,7 +5,7 @@
 // The dome and vaults use the team green, which the game swaps for the player's colour. Front is +z.
 // Run from the repo root: node unity/Tools/build-water-center.mjs
 import { writeFileSync } from 'node:fs';
-import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, writeAges } from './model-kit.mjs';
+import { hex, team, isTeam, hash, norm, paintAtlas, normalMap, projectFaces, writeGlb, MeshBuilder, writeAges, useDensity } from './model-kit.mjs';
 
 // One file per age: center_water_a1, center_water, center_water_a3
 const OUT = (suffix) => new URL(`../Assets/Resources/models/center_water${suffix}.bytes`, import.meta.url);
@@ -266,6 +266,7 @@ pillar(-1.35, 3.4, BASE, 1.6);
 pillar(1.35, 3.4, BASE, 1.6);
 
 // ---------- Paint and write ----------
+useDensity('center_water', mesh.tris, D);
 const rgba = paintAtlas(ATLAS, REGIONS);
 const { texture, normalTexture } = writeAges(OUT, 'center_water', 'WaterPalace', mesh.tris, REGIONS, D, ATLAS, rgba, heightOf, 0.8, 'water');
 writeFileSync(PREVIEW, texture);

@@ -85,6 +85,7 @@ namespace RTS.Game
         PixelBatch pixels, overlay, ordersBatch;
         TerritoryMap territory;
         GrassField grass;
+        Decor decor;
         Transform worldRoot, objectsRoot;
         Quaternion billboardRot = Quaternion.identity;
         float lastYaw = float.NaN, lastTilt = float.NaN;
@@ -145,6 +146,9 @@ namespace RTS.Game
             foreach (var r in (JArray)start["resources"]) AddResource(ResourceInfo.Parse(r));
             ApplySheep(Parse.Sheep(start["sheep"]));
             grass = GrassField.Build(worldRoot, ground, (x, y) => resourceAt.ContainsKey(TileKey(x, y)));
+            Crystals.Build(worldRoot, ground);
+            Crystals.BuildWalls(worldRoot, ground);
+            decor = Decor.Build(worldRoot, ground, (x, y) => resourceAt.ContainsKey(TileKey(x, y)));
             rts.FocusOn(mapTiles * C.TileSize / 2f, mapTiles * C.TileSize / 2f);
         }
 
@@ -402,6 +406,7 @@ namespace RTS.Game
                 int n = v.stats.tiles;
                 ground.Flatten(e.id, e.tx, e.ty, n);
                 grass?.Clear(e.tx, e.ty, n);
+                decor?.Clear(e.tx, e.ty, n);
                 ReseatResources(e.tx - 2, e.ty - 2, e.tx + n + 2, e.ty + n + 2);
                 v.root.transform.position = ground.ToWorld(e.x, e.y);
                 // Flames while badly damaged: an animated sprite and a flickering light

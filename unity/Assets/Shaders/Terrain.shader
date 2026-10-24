@@ -1,5 +1,9 @@
 // Ground: the baked pixel-art ground texture (grass, sand, riverbed) on the heightmap mesh, with
 // Lambert sun + sky light, cast and received shadows and a little darkening on steep slopes.
+// _Emission adds a share of the albedo that ignores the light (the spirit crystals' glow). _Haze > 0
+// fades the surface into _HazeColor by (1 - vertex alpha) after the fog of war (_HazeFixed: by a fixed
+// amount, for models hung in the void), so the spirit void's walls sink into a white mist that stays
+// white in unexplored ground.
 Shader "RTS/Terrain"
 {
     Properties
@@ -11,6 +15,10 @@ Shader "RTS/Terrain"
         _SlopeDark ("Slope darkening", Range(0,1)) = 0.35
         [Normal] _BumpMap ("Normal map (models)", 2D) = "bump" {}
         _OutlineColor ("Outline when outlines are on (alpha 0 = none)", Color) = (0,0,0,0)
+        _Emission ("Self-lit share of the albedo", Range(0,1)) = 0
+        _Haze ("Fade into the haze colour by 1 - vertex alpha", Range(0,1)) = 0
+        _HazeColor ("Haze colour", Color) = (1,1,1,1)
+        _HazeFixed ("Fade into the haze colour by this much everywhere", Range(0,1)) = 0
     }
     SubShader
     {
@@ -27,6 +35,10 @@ Shader "RTS/Terrain"
             float _Cull;
             half _SlopeDark;
             half4 _OutlineColor;
+            half _Emission;
+            half _Haze;
+            half4 _HazeColor;
+            half _HazeFixed;
         CBUFFER_END
         float _OutlinesOn; // global: the player's "outlines" setting
         ENDHLSL
@@ -97,8 +109,10 @@ Shader "RTS/Terrain"
                     light += l.color * l.distanceAttenuation * saturate(dot(n, l.direction));
                 LIGHT_LOOP_END
                 #endif
-                half3 col = MixFog(albedo * light, i.fog);
-                return half4(ApplyFogOfWar(col, i.positionWS), 1);
+                half3 col = MixFog(albedo * (light + _Emission), i.fog);
+                col = ApplyFogOfWar(col, i.positionWS);
+                col = lerp(col, _HazeColor.rgb, saturate(_Haze * (1 - i.color.a) + _HazeFixed));
+                return half4(col, 1);
             }
             ENDHLSL
         }

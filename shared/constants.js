@@ -85,9 +85,10 @@ export const TILE_SIZE = 40;
 // Map side in tiles grows with the number of players (big buildings need roomy bases)
 export const mapTilesFor = (players) => Math.min(168, Math.max(112, 96 + players * 8));
 
-// Water can't be crossed except over bridges; neither can be built on
+// Water can't be crossed except over bridges; neither can be built on. Crystal (spirit dimension
+// only): crystal outcrops nobody can walk through or build on
 export const Terrain = {
-  GRASS: 0, SAND: 1, WATER: 2, BRIDGE: 3,
+  GRASS: 0, SAND: 1, WATER: 2, BRIDGE: 3, CRYSTAL: 4,
 };
 
 // Bases stand on a ring around the map centre, this fraction of the map side away from it
@@ -146,8 +147,9 @@ export const EntityType = {
 export const AGE_RANGE_BONUS = 45;
 
 // Looks the host can pick for the map; the rules and the world are the same in all of them.
-// spirit (the spirit dimension): red grass, grey mountains, shallow water where the beaches are and a
-// bottomless void with waterfalls where the rivers and the sea are
+// spirit (the spirit dimension): red grass, grey mountains, shallow water where the beaches are, a
+// bottomless void with waterfalls where the rivers and the sea are (wider than the classic rivers),
+// and crystal outcrops that block the way
 export const MAP_THEMES = ['classic', 'spirit'];
 
 export const AGES = [

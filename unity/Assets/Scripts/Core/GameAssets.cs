@@ -303,6 +303,84 @@ namespace RTS
             }
         }
 
+        static Texture2D spiritCliff;
+        // The spirit void's cliff face, 64 x 256 px (4 x 16 tiles at 16 px per tile), tiling both ways:
+        // the red grass overhanging the lip, a band of rust-orange rock hanging down in points with dark
+        // streaks running from it, then tall grey-tan stone columns, each shaded like a rounded pillar
+        // lit from the left, split by dark crevices and crossed by ledges. Row 0 of the art is the top
+        // (stored flipped: textures start at the bottom)
+        public static Texture2D SpiritCliff
+        {
+            get
+            {
+                if (spiritCliff != null) return spiritCliff;
+                const int W = 64, H = 256;
+                float Hash(int x, int y) { float v = Mathf.Sin(x * 127.1f + y * 311.7f) * 43758.5453f; return v - Mathf.Floor(v); }
+                Color32 C(int hex) => new Color32((byte)(hex >> 16), (byte)(hex >> 8), (byte)hex, 255);
+                Color32 grass = C(0x6a2129), grassDark = C(0x4a161d), shadow = C(0x2e201d), crack = C(0x2f2a26), drip = C(0x3e302a);
+                Color32[] rust = { C(0x7e3a1c), C(0xa8521f), C(0xc8692a), C(0xe08a3e), C(0xf0aa5c) };
+                Color32[] stone = { C(0x4a443e), C(0x655e55), C(0x80786b), C(0x9a9181), C(0xb3aa98), C(0xc8c0ae) };
+                // Columns 9..18 px wide; the last one takes what is left so the tile wraps
+                var colOf = new int[W];
+                var colStart = new List<int>();
+                var posIn = new float[W];
+                for (int x = 0; x < W;)
+                {
+                    int w = 9 + (int)(Hash(x, 7) * 10);
+                    if (W - (x + w) < 8) w = W - x;
+                    for (int k = 0; k < w; k++) { colOf[x + k] = colStart.Count; posIn[x + k] = (k + 0.5f) / w; }
+                    colStart.Add(x);
+                    x += w;
+                }
+                var px = new Color32[W * H];
+                for (int x = 0; x < W; x++)
+                {
+                    int ci = colOf[x], cs = colStart[ci];
+                    float p = posIn[x], tone = (Hash(ci, 2) - 0.5f) * 1.4f;
+                    int rustEnd = 20 + (int)(Hash(x >> 1, 11) * 10) + Mathf.RoundToInt(Mathf.Sin(x * 0.45f) * 4) + (Hash(ci, 4) > 0.5f ? 6 : 0);
+                    int dripEnd = Hash(x >> 1, 19) > 0.8f ? rustEnd + 16 + (int)(Hash(x >> 1, 23) * 70) : 0;
+                    int ledgeOff = (int)(Hash(ci, 9) * 30);
+                    for (int y = 0; y < H; y++)
+                    {
+                        Color32 c;
+                        if (y < 2) c = grass;
+                        else if (y < 3) c = grassDark;
+                        else if (y < 5) c = shadow;
+                        else if (y < rustEnd)
+                        {
+                            // Rust, rounded per column like the stone, in thin strata
+                            int k = Mathf.RoundToInt(3.4f - p * 2.6f + (Hash(x >> 1, y >> 1) - 0.5f) * 1.2f);
+                            if (((y >> 1) + ci) % 6 == 0) k--;
+                            if (y < 8) k--;
+                            c = rust[Mathf.Clamp(k, 0, 4)];
+                        }
+                        else
+                        {
+                            int ny = y - rustEnd;
+                            float shade = 3.6f + tone - Mathf.Abs(p - 0.32f) * 4.4f + (Hash(x >> 1, y >> 1) - 0.5f) * 0.9f;
+                            if (y > H - 60) shade += (y - (H - 60)) / 60f * 1.2f; // paler toward the mist
+                            c = stone[Mathf.Clamp(Mathf.RoundToInt(shade), 0, 5)];
+                            if (ny < 3) c = Color32.Lerp(rust[1], c, ny / 3f);
+                            int ledge = (y + ledgeOff) % 84;
+                            if (ledge == 0) c = crack;
+                            else if (ledge == 1) c = stone[5];
+                            else if (ledge == 2) c = stone[4];
+                            // Short fissures across a column
+                            if ((y + ledgeOff) % 21 == 0 && Hash(ci, (y + ledgeOff) / 21) > 0.7f && p > 0.15f && p < 0.85f) c = stone[1];
+                        }
+                        // The crevice between two columns, 2 px wide in places
+                        if (y >= 3 && (x == cs || (x == cs + 1 && Hash(ci, y >> 3) > 0.3f))) c = y < rustEnd ? rust[0] : crack;
+                        if (y >= rustEnd - 3 && y < dripEnd && (x & 1) == 0) c = drip;
+                        px[(H - 1 - y) * W + x] = c;
+                    }
+                }
+                spiritCliff = new Texture2D(W, H, TextureFormat.RGBA32, true) { filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Repeat, name = "Spirit cliff" };
+                spiritCliff.SetPixels32(px);
+                spiritCliff.Apply(true);
+                return spiritCliff;
+            }
+        }
+
         // Soft pixel clouds on transparency, tiling every 32 px
         public static Texture2D SpiritMist
         {
